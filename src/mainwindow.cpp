@@ -198,7 +198,7 @@ void MainWindow::createCustomerTab()
     m_editCustomerBtn->setObjectName("editCustomerBtn");
     m_deleteCustomerBtn = new QPushButton("Удалить");
     m_deleteCustomerBtn->setObjectName("deleteCustomerBtn");
-    QPushButton *createRentalFromCustomerBtn = new QPushButton("Создать аренду");
+    m_createRentalFromCustomerBtn = new QPushButton("Создать аренду");
     
     // Инициализируем состояние кнопок
     m_editCustomerBtn->setEnabled(false);
@@ -207,7 +207,7 @@ void MainWindow::createCustomerTab()
     buttonLayout->addWidget(m_addCustomerBtn);
     buttonLayout->addWidget(m_editCustomerBtn);
     buttonLayout->addWidget(m_deleteCustomerBtn);
-    buttonLayout->addWidget(createRentalFromCustomerBtn);
+    buttonLayout->addWidget(m_createRentalFromCustomerBtn);
     buttonLayout->addStretch();
     layout->addLayout(buttonLayout);
     
@@ -280,6 +280,7 @@ void MainWindow::createRentalTab()
     m_completeRentalBtn->setObjectName("completeRentalBtn");
     m_viewRentalBtn = new QPushButton("Просмотр");
     m_viewRentalBtn->setObjectName("viewRentalBtn");
+    m_printRentalBtn = new QPushButton("Печать договора");
     
     // Инициализируем состояние кнопок
     m_completeRentalBtn->setEnabled(false);
@@ -288,6 +289,7 @@ void MainWindow::createRentalTab()
     buttonLayout->addWidget(m_newRentalBtn);
     buttonLayout->addWidget(m_completeRentalBtn);
     buttonLayout->addWidget(m_viewRentalBtn);
+    buttonLayout->addWidget(m_printRentalBtn);
     buttonLayout->addStretch();
     layout->addLayout(buttonLayout);
     
@@ -356,7 +358,7 @@ void MainWindow::setupConnections()
     connect(m_addCustomerBtn, &QPushButton::clicked, this, &MainWindow::onNewCustomer);
     connect(m_editCustomerBtn, &QPushButton::clicked, this, &MainWindow::onEditCustomer);
     connect(m_deleteCustomerBtn, &QPushButton::clicked, this, &MainWindow::onDeleteCustomer);
-    connect(createRentalFromCustomerBtn, &QPushButton::clicked, this, [this]() {
+    connect(m_createRentalFromCustomerBtn, &QPushButton::clicked, this, [this]() {
         if (m_selectedCustomerId == -1) {
             QMessageBox::information(this, "Информация", "Выберите клиента в таблице");
             return;
@@ -391,6 +393,7 @@ void MainWindow::setupConnections()
     connect(m_newRentalBtn, &QPushButton::clicked, this, &MainWindow::onNewRental);
     connect(m_completeRentalBtn, &QPushButton::clicked, this, &MainWindow::onCompleteRental);
     connect(m_viewRentalBtn, &QPushButton::clicked, this, &MainWindow::onViewRental);
+    connect(m_printRentalBtn, &QPushButton::clicked, this, &MainWindow::onPrintRental);
     
     connect(m_generateReportBtn, &QPushButton::clicked, this, &MainWindow::onReports);
     
@@ -1065,6 +1068,203 @@ void MainWindow::onViewRental()
     
     dialog.exec();
     delete rental;
+}
+
+void MainWindow::onPrintRental()
+{
+    if (m_selectedRentalId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите аренду для печати");
+        return;
+    }
+    Rental* rental = Rental::loadById(m_selectedRentalId);
+    if (!rental) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось загрузить данные аренды");
+        return;
+    }
+
+    Customer* c = rental->getCustomer();
+    Equipment* e = rental->getEquipment();
+    const QString customerName = c ? c->getName() : "";
+    const QString customerPhone = c ? c->getPhone() : "";
+    const QString customerEmail = c ? c->getEmail() : "";
+    const QString customerPassport = c ? c->getPassport() : "";
+    const QString customerAddress = c ? c->getAddress() : "";
+
+    const QString equipmentName = e ? e->getName() : "";
+    const QString equipmentCategory = e ? e->getCategory() : "";
+    const QString equipmentPrice = e ? QString::number(e->getPrice(), 'f', 2) : "0.00";
+
+    const QString startDt = rental->getStartDate().toString("dd.MM.yyyy HH:mm");
+    const QString endDt = rental->getEndDate().toString("dd.MM.yyyy HH:mm");
+    const QString quantity = QString::number(rental->getQuantity());
+    const QString totalPrice = QString::number(rental->getTotalPrice(), 'f', 2);
+    const QString deposit = QString::number(rental->getDeposit(), 'f', 2);
+
+    QString html;
+    html += "<html><head><meta charset='utf-8'><style>";
+    html += "body{font-family:'Segoe UI',Arial,sans-serif;color:#111;} h1{font-size:18px;margin:0 0 12px;}";
+    html += "table{width:100%;border-collapse:collapse;margin-top:10px;} th,td{border:1px solid #444;padding:6px;text-align:left;font-size:12px;}";
+    html += "section{margin-bottom:12px;} .muted{color:#666;font-size:12px;}";
+    html += "</style></head><body>";
+    html += "<h1>Договор аренды оборудования</h1>";
+    html += QString("<div class='muted'>Дата печати: %1</div>").arg(QDateTime::currentDateTime().toString("dd.MM.yyyy HH:mm"));
+
+    html += "<section><h3>Стороны</h3>";
+    html += "<table>";
+    html += QString("<tr><th>Клиент</th><td>%1</td></tr>").arg(customerName.toHtmlEscaped());
+    html += QString("<tr><th>Телефон</th><td>%1</td></tr>").arg(customerPhone.toHtmlEscaped());
+    html += QString("<tr><th>Email</th><td>%1</td></tr>").arg(customerEmail.toHtmlEscaped());
+    html += QString("<tr><th>Паспорт</th><td>%1</td></tr>").arg(customerPassport.toHtmlEscaped());
+    html += QString("<tr><th>Адрес регистрации</th><td>%1</td></tr>").arg(customerAddress.toHtmlEscaped());
+    html += "</table></section>";
+
+    html += "<section><h3>Предмет договора</h3>";
+    html += "<table>";
+    html += QString("<tr><th>Оборудование</th><td>%1</td></tr>").arg(equipmentName.toHtmlEscaped());
+    html += QString("<tr><th>Категория</th><td>%1</td></tr>").arg(equipmentCategory.toHtmlEscaped());
+    html += QString("<tr><th>Количество</th><td>%1</td></tr>").arg(quantity.toHtmlEscaped());
+    html += QString("<tr><th>Период аренды</th><td>%1 — %2</td></tr>").arg(startDt, endDt);
+    html += "</table></section>";
+
+    html += "<section><h3>Стоимость</h3>";
+    html += "<table>";
+    html += QString("<tr><th>Цена за 1-й день</th><td>%1 ₽</td></tr>").arg(equipmentPrice);
+    html += QString("<tr><th>Итоговая стоимость</th><td><b>%1 ₽</b></td></tr>").arg(totalPrice);
+    html += QString("<tr><th>Залог</th><td>%1 ₽</td></tr>").arg(deposit);
+    html += "</table></section>";
+
+    if (!rental->getNotes().isEmpty()) {
+        html += QString("<section><h3>Примечания</h3><div>%1</div></section>").arg(rental->getNotes().toHtmlEscaped());
+    }
+
+    html += "<section><h3>Подписи</h3>";
+    html += "<table><tr><th style='width:40%'>Арендодатель</th><th style='width:40%'>Арендатор</th></tr>";
+    html += "<tr><td style='height:60px;vertical-align:bottom'>____________________</td><td style='vertical-align:bottom'>____________________</td></tr></table>";
+    html += "</section>";
+
+    html += "</body></html>";
+
+    // Option A: Fill user-provided DOCX template if present
+    QString templatePath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/Договор Прокат Всего  2025.docx";
+    if (!QFile::exists(templatePath)) {
+        templatePath = QFileDialog::getOpenFileName(this,
+            "Выберите DOCX шаблон договора",
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+            "Шаблон договора (*.docx)");
+    }
+    QMap<QString, QString> placeholders = {
+        {"{{DATE}}", QDate::currentDate().toString("dd.MM.yyyy")},
+        {"{{CUSTOMER_NAME}}", customerName},
+        {"{{CUSTOMER_PHONE}}", customerPhone},
+        {"{{CUSTOMER_EMAIL}}", customerEmail},
+        {"{{CUSTOMER_PASSPORT}}", customerPassport},
+        {"{{CUSTOMER_ADDRESS}}", customerAddress},
+        {"{{EQUIPMENT_NAME}}", equipmentName},
+        {"{{EQUIPMENT_CATEGORY}}", equipmentCategory},
+        {"{{QUANTITY}}", quantity},
+        {"{{START}}", startDt},
+        {"{{END}}", endDt},
+        {"{{TOTAL}}", totalPrice},
+        {"{{DEPOSIT}}", deposit},
+        {"{{NOTES}}", rental->getNotes()}
+    };
+    QString filledDocxPath;
+    bool docxOk = false;
+    if (QFile::exists(templatePath)) {
+        docxOk = generateDocxFromTemplate(templatePath, placeholders, filledDocxPath);
+    }
+    if (docxOk) {
+        QMessageBox::information(this, "Готово", QString("Заполненный договор сохранен: %1").arg(filledDocxPath));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(filledDocxPath));
+    } else {
+        if (!templatePath.isEmpty()) {
+            QMessageBox::warning(this, "Шаблон не заполнен",
+                                 "Не удалось заполнить шаблон .docx. Будет напечатана HTML-версия из приложения.");
+        }
+        // Fallback: print HTML
+        QTextDocument doc;
+        doc.setHtml(html);
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setPageSize(QPageSize(QPageSize::A4));
+        QPrintDialog dialog(&printer, this);
+        dialog.setWindowTitle("Печать договора аренды");
+        if (dialog.exec() == QDialog::Accepted) {
+            doc.print(&printer);
+        }
+    }
+
+    delete rental;
+}
+
+// Simple DOCX templating via unzip/zip (works on Linux and Windows with 7zip/zip installed)
+bool MainWindow::generateDocxFromTemplate(const QString& templatePath, const QMap<QString, QString>& values, QString& outputDocxPath)
+{
+    if (!QFile::exists(templatePath)) return false;
+
+    QTemporaryDir tempDir;
+    if (!tempDir.isValid()) return false;
+    QString tempPath = tempDir.path();
+
+    // Unzip DOCX (ZIP) into temp directory
+#if defined(Q_OS_WIN)
+    // Try PowerShell Expand-Archive if available
+    {
+        QProcess p;
+        QStringList args;
+        args << "-NoLogo" << "-NoProfile" << "-Command"
+             << QString("Expand-Archive -Path \"%1\" -DestinationPath \"%2\" -Force").arg(templatePath, tempPath);
+        p.start("powershell", args);
+        p.waitForFinished(-1);
+        if (p.exitCode() != 0) return false;
+    }
+#else
+    // Ensure unzip exists
+    if (QProcess::execute("which", QStringList() << "unzip") != 0) return false;
+    if (QProcess::execute("unzip", QStringList() << "-o" << templatePath << "-d" << tempPath) != 0) return false;
+#endif
+
+    // Replace placeholders in word/document.xml
+    QString docXmlPath = tempPath + "/word/document.xml";
+    QFile f(docXmlPath);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    QString xml = QString::fromUtf8(f.readAll());
+    f.close();
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        xml.replace(it.key(), it.value().toHtmlEscaped());
+    }
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return false;
+    f.write(xml.toUtf8());
+    f.close();
+
+    // Zip back to DOCX
+    QString outName = QString("Договор_аренды_%1.docx").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmm"));
+    outputDocxPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/" + outName;
+#if defined(Q_OS_WIN)
+    {
+        QProcess p;
+        QString t = tempPath; t.replace("\\", "/");
+        QString o = outputDocxPath; o.replace("\\", "/");
+        QStringList args;
+        args << "-NoLogo" << "-NoProfile" << "-Command"
+             << QString("Compress-Archive -Path \"%1/*\" -DestinationPath \"%2\" -Force").arg(t, o);
+        p.start("powershell", args);
+        p.waitForFinished(-1);
+        if (p.exitCode() != 0) return false;
+    }
+#else
+    // Ensure zip exists
+    if (QProcess::execute("which", QStringList() << "zip") != 0) return false;
+    {
+        QProcess p;
+        p.setWorkingDirectory(tempPath);
+        QStringList args;
+        args << "-r" << outputDocxPath << ".";
+        p.start("zip", args);
+        p.waitForFinished(-1);
+        if (p.exitCode() != 0) return false;
+    }
+#endif
+    return QFile::exists(outputDocxPath);
 }
 
 void MainWindow::onCustomerSearch()

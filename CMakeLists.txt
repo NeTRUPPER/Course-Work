@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find Qt6 components
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql PrintSupport)
 
 # Find SQLCipher
 find_package(PkgConfig REQUIRED)
@@ -70,6 +70,7 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Core 
     Qt6::Widgets 
     Qt6::Sql
+    Qt6::PrintSupport
     ${SQLCIPHER_LIBRARIES}
 )
 

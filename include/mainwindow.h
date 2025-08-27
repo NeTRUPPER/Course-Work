@@ -28,6 +28,14 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QApplication>
+#include <QTemporaryDir>
+#include <QProcess>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QStandardPaths>
+#include <QFileInfo>
+#include <QtPrintSupport/QPrinter>
+#include <QtPrintSupport/QPrintDialog>
 
 // Forward declarations
 class CustomerForm;
@@ -57,6 +65,7 @@ private slots:
     void onDeleteEquipment();
     void onCompleteRental();
     void onViewRental();
+    void onPrintRental();
     void onSearchCustomer();
     void onSearchEquipment();
     void onCustomerSearch();
@@ -100,6 +109,7 @@ private:
     
     // Style methods
     void loadStyleSheet(const QString& theme);
+    bool generateDocxFromTemplate(const QString& templatePath, const QMap<QString, QString>& values, QString& outputDocxPath);
 
     // UI Components
     QTabWidget *m_tabWidget;
@@ -113,6 +123,7 @@ private:
     QPushButton *m_addCustomerBtn;
     QPushButton *m_editCustomerBtn;
     QPushButton *m_deleteCustomerBtn;
+    QPushButton *m_createRentalFromCustomerBtn;
     QLineEdit *m_customerSearchEdit;
     
     // Equipment Tab Components
@@ -127,6 +138,7 @@ private:
     QPushButton *m_newRentalBtn;
     QPushButton *m_completeRentalBtn;
     QPushButton *m_viewRentalBtn;
+    QPushButton *m_printRentalBtn;
     
     // Reports Tab Components
     QTextEdit *m_reportsText;
