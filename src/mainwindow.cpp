@@ -1,0 +1,1236 @@
+#include "mainwindow.h"
+#include "database.h"
+#include "rentalmanager.h"
+#include "security.h"
+#include "customerdialog.h"
+#include "equipmentdialog.h"
+#include "rentaldialog.h"
+#include <QApplication>
+#include <QMessageBox>
+#include <QInputDialog>
+#include <QFileDialog>
+
+#include <QTextDocument>
+#include <QDateTime>
+#include <QTimer>
+#include <QSettings>
+#include <QStyle>
+#include <QScreen>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , m_rentalManager(nullptr)
+    , m_database(nullptr)
+    , m_selectedCustomerId(-1)
+    , m_selectedEquipmentId(-1)
+    , m_selectedRentalId(-1)
+{
+    setupUI();
+    setupMenuBar();
+    setupToolBar();
+    setupStatusBar();
+    setupCentralWidget();
+    setupConnections();
+    
+    // Инициализация менеджеров
+    m_database = &Database::getInstance();
+    m_rentalManager = new RentalManager(this);
+    
+    // Открываем базу данных
+    if (!m_database->openDatabase("")) {
+        QMessageBox::critical(this, "Ошибка", "Не удалось открыть базу данных");
+        return;
+    }
+    
+    // Загружаем данные в таблицы
+    refreshCustomerTable();
+    refreshEquipmentTable();
+    refreshRentalTable();
+    
+    // Загружаем стили
+    loadStyleSheet("main");
+    
+    // Обновление статуса
+    updateStatus();
+    
+    // Таймер для проверки просроченных аренд
+    QTimer *overdueTimer = new QTimer(this);
+    connect(overdueTimer, &QTimer::timeout, this, [this]() {
+        m_rentalManager->checkOverdueRentals();
+    });
+    overdueTimer->start(300000); // Проверка каждые 5 минут
+    
+    // Загрузка настроек
+    loadSettings();
+}
+
+MainWindow::~MainWindow()
+{
+    saveSettings();
+}
+
+void MainWindow::setupUI()
+{
+    setWindowTitle("Система проката туристического оборудования");
+    setMinimumSize(1200, 800);
+    
+    // Центрируем окно на экране
+    QScreen *screen = QApplication::primaryScreen();
+    QRect screenGeometry = screen->geometry();
+    int x = (screenGeometry.width() - width()) / 2;
+    int y = (screenGeometry.height() - height()) / 2;
+    move(x, y);
+}
+
+void MainWindow::setupMenuBar()
+{
+    QMenuBar *menuBar = this->menuBar();
+    
+    // Меню Файл
+    QMenu *fileMenu = menuBar->addMenu("&Файл");
+    m_newCustomerAction = fileMenu->addAction("&Новый клиент");
+    m_newEquipmentAction = fileMenu->addAction("&Новое оборудование");
+    m_newRentalAction = fileMenu->addAction("&Новая аренда");
+    fileMenu->addSeparator();
+    m_exitAction = fileMenu->addAction("&Выход");
+    
+    // Меню Поиск
+    QMenu *searchMenu = menuBar->addMenu("&Поиск");
+    m_searchAction = searchMenu->addAction("&Поиск клиентов");
+    searchMenu->addAction("Поиск оборудования");
+    searchMenu->addAction("Поиск аренд");
+    
+    // Меню Отчеты
+    QMenu *reportsMenu = menuBar->addMenu("&Отчеты");
+    m_reportsAction = reportsMenu->addAction("&Генерировать отчет");
+    reportsMenu->addAction("Отчет по арендам");
+    reportsMenu->addAction("Отчет по оборудованию");
+    reportsMenu->addAction("Финансовый отчет");
+    
+    // Меню Настройки
+    QMenu *settingsMenu = menuBar->addMenu("&Настройки");
+    m_settingsAction = settingsMenu->addAction("&Параметры");
+    settingsMenu->addAction("Резервное копирование");
+    settingsMenu->addAction("Восстановление");
+    settingsMenu->addSeparator();
+    settingsMenu->addAction("Сменить пароль");
+    
+    // Меню Справка
+    QMenu *helpMenu = menuBar->addMenu("&Справка");
+    m_aboutAction = helpMenu->addAction("&О программе");
+}
+
+void MainWindow::setupToolBar()
+{
+    QToolBar *toolBar = addToolBar("Основная панель");
+    toolBar->setObjectName("mainToolbar");
+    toolBar->setMovable(false);
+    
+    toolBar->addAction(m_newCustomerAction);
+    toolBar->addAction(m_newEquipmentAction);
+    toolBar->addAction(m_newRentalAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_searchAction);
+    toolBar->addAction(m_reportsAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_settingsAction);
+}
+
+void MainWindow::setupStatusBar()
+{
+    QStatusBar *statusBar = this->statusBar();
+    
+    m_statusLabel = new QLabel("Готово");
+    m_userLabel = new QLabel("Пользователь: Администратор");
+    m_dateLabel = new QLabel(QDateTime::currentDateTime().toString("dd.MM.yyyy hh:mm"));
+    
+    statusBar->addWidget(m_statusLabel);
+    statusBar->addPermanentWidget(m_userLabel);
+    statusBar->addPermanentWidget(m_dateLabel);
+    
+    // Обновление времени
+    QTimer *timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this]() {
+        m_dateLabel->setText(QDateTime::currentDateTime().toString("dd.MM.yyyy hh:mm"));
+    });
+    timer->start(60000); // Обновление каждую минуту
+}
+
+void MainWindow::setupCentralWidget()
+{
+    m_tabWidget = new QTabWidget(this);
+    setCentralWidget(m_tabWidget);
+    
+    createCustomerTab();
+    createEquipmentTab();
+    createRentalTab();
+    createReportsTab();
+}
+
+void MainWindow::createCustomerTab()
+{
+    m_customerTab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(m_customerTab);
+    
+    // Панель поиска
+    QHBoxLayout *searchLayout = new QHBoxLayout();
+    m_customerSearchEdit = new QLineEdit();
+    m_customerSearchEdit->setPlaceholderText("Поиск клиентов...");
+    m_customerSearchEdit->setProperty("search", true);
+    QPushButton *searchBtn = new QPushButton("Поиск");
+    searchLayout->addWidget(m_customerSearchEdit);
+    searchLayout->addWidget(searchBtn);
+    layout->addLayout(searchLayout);
+    
+    // Таблица клиентов
+    m_customerTable = new QTableWidget();
+    m_customerTable->setColumnCount(6);
+    m_customerTable->setHorizontalHeaderLabels({"ID", "Имя", "Телефон", "Email", "Паспорт", "Адрес"});
+    m_customerTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_customerTable->setAlternatingRowColors(true);
+    layout->addWidget(m_customerTable);
+    
+    // Кнопки управления
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    m_addCustomerBtn = new QPushButton("Добавить клиента");
+    m_addCustomerBtn->setObjectName("addCustomerBtn");
+    m_editCustomerBtn = new QPushButton("Редактировать");
+    m_editCustomerBtn->setObjectName("editCustomerBtn");
+    m_deleteCustomerBtn = new QPushButton("Удалить");
+    m_deleteCustomerBtn->setObjectName("deleteCustomerBtn");
+    QPushButton *createRentalFromCustomerBtn = new QPushButton("Создать аренду");
+    
+    // Инициализируем состояние кнопок
+    m_editCustomerBtn->setEnabled(false);
+    m_deleteCustomerBtn->setEnabled(false);
+    
+    buttonLayout->addWidget(m_addCustomerBtn);
+    buttonLayout->addWidget(m_editCustomerBtn);
+    buttonLayout->addWidget(m_deleteCustomerBtn);
+    buttonLayout->addWidget(createRentalFromCustomerBtn);
+    buttonLayout->addStretch();
+    layout->addLayout(buttonLayout);
+    
+    m_tabWidget->addTab(m_customerTab, "Клиенты");
+}
+
+void MainWindow::createEquipmentTab()
+{
+    m_equipmentTab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(m_equipmentTab);
+    
+    // Панель поиска
+    QHBoxLayout *searchLayout = new QHBoxLayout();
+    m_equipmentSearchEdit = new QLineEdit();
+    m_equipmentSearchEdit->setPlaceholderText("Поиск оборудования...");
+    m_equipmentSearchEdit->setProperty("search", true);
+    QPushButton *searchBtn = new QPushButton("Поиск");
+    searchLayout->addWidget(m_equipmentSearchEdit);
+    searchLayout->addWidget(searchBtn);
+    layout->addLayout(searchLayout);
+    
+    // Таблица оборудования
+    m_equipmentTable = new QTableWidget();
+    m_equipmentTable->setColumnCount(7);
+            m_equipmentTable->setHorizontalHeaderLabels({"ID", "Название", "Категория", "Цена/день (₽)", "Залог (₽)", "Количество", "Доступно"});
+    m_equipmentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_equipmentTable->setAlternatingRowColors(true);
+    layout->addWidget(m_equipmentTable);
+    
+    // Кнопки управления
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    m_addEquipmentBtn = new QPushButton("Добавить оборудование");
+    m_addEquipmentBtn->setObjectName("addEquipmentBtn");
+    m_editEquipmentBtn = new QPushButton("Редактировать");
+    m_editEquipmentBtn->setObjectName("editEquipmentBtn");
+    m_deleteEquipmentBtn = new QPushButton("Удалить");
+    m_deleteEquipmentBtn->setObjectName("deleteEquipmentBtn");
+    
+    // Инициализируем состояние кнопок
+    m_editEquipmentBtn->setEnabled(false);
+    m_deleteEquipmentBtn->setEnabled(false);
+    
+    buttonLayout->addWidget(m_addEquipmentBtn);
+    buttonLayout->addWidget(m_editEquipmentBtn);
+    buttonLayout->addWidget(m_deleteEquipmentBtn);
+    buttonLayout->addStretch();
+    layout->addLayout(buttonLayout);
+    
+    m_tabWidget->addTab(m_equipmentTab, "Оборудование");
+}
+
+void MainWindow::createRentalTab()
+{
+    m_rentalTab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(m_rentalTab);
+    
+    // Таблица аренд
+            m_rentalTable = new QTableWidget();
+        m_rentalTable->setColumnCount(9);
+            m_rentalTable->setHorizontalHeaderLabels({"ID", "Клиент", "Оборудование", "Количество", "Дата начала", "Дата окончания", "Статус", "Стоимость аренды (₽)", "Залог (₽)"});
+    m_rentalTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_rentalTable->setAlternatingRowColors(true);
+    layout->addWidget(m_rentalTable);
+    
+    // Кнопки управления
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    m_newRentalBtn = new QPushButton("Новая аренда");
+    m_newRentalBtn->setObjectName("newRentalBtn");
+    m_completeRentalBtn = new QPushButton("Завершить аренду");
+    m_completeRentalBtn->setObjectName("completeRentalBtn");
+    m_viewRentalBtn = new QPushButton("Просмотр");
+    m_viewRentalBtn->setObjectName("viewRentalBtn");
+    
+    // Инициализируем состояние кнопок
+    m_completeRentalBtn->setEnabled(false);
+    m_viewRentalBtn->setEnabled(false);
+    
+    buttonLayout->addWidget(m_newRentalBtn);
+    buttonLayout->addWidget(m_completeRentalBtn);
+    buttonLayout->addWidget(m_viewRentalBtn);
+    buttonLayout->addStretch();
+    layout->addLayout(buttonLayout);
+    
+    m_tabWidget->addTab(m_rentalTab, "Аренды");
+}
+
+void MainWindow::createReportsTab()
+{
+    m_reportsTab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(m_reportsTab);
+    
+    // Панель настроек отчета
+    QGroupBox *reportGroup = new QGroupBox("Параметры отчета");
+    QFormLayout *formLayout = new QFormLayout(reportGroup);
+    
+    m_reportTypeCombo = new QComboBox();
+    m_reportTypeCombo->addItems({"Отчет по арендам", "Отчет по оборудованию", "Финансовый отчет", "Отчет по клиентам"});
+    
+    m_reportStartDate = new QDateEdit();
+    m_reportStartDate->setDate(QDate::currentDate().addDays(-30));
+    m_reportStartDate->setCalendarPopup(true);
+    
+    m_reportEndDate = new QDateEdit();
+    m_reportEndDate->setDate(QDate::currentDate());
+    m_reportEndDate->setCalendarPopup(true);
+    
+    formLayout->addRow("Тип отчета:", m_reportTypeCombo);
+    formLayout->addRow("Дата начала:", m_reportStartDate);
+    formLayout->addRow("Дата окончания:", m_reportEndDate);
+    
+    layout->addWidget(reportGroup);
+    
+    // Кнопки
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    m_generateReportBtn = new QPushButton("Сгенерировать отчет");
+    QPushButton *printBtn = new QPushButton("Печать");
+    QPushButton *exportBtn = new QPushButton("Экспорт");
+    buttonLayout->addWidget(m_generateReportBtn);
+    buttonLayout->addWidget(printBtn);
+    buttonLayout->addWidget(exportBtn);
+    buttonLayout->addStretch();
+    layout->addLayout(buttonLayout);
+    
+    // Область отчета
+    m_reportsText = new QTextEdit();
+    m_reportsText->setObjectName("reportsText");
+    m_reportsText->setReadOnly(true);
+    layout->addWidget(m_reportsText);
+    
+    m_tabWidget->addTab(m_reportsTab, "Отчеты");
+}
+
+void MainWindow::setupConnections()
+{
+    // Соединения меню
+    connect(m_newCustomerAction, &QAction::triggered, this, &MainWindow::onNewCustomer);
+    connect(m_newEquipmentAction, &QAction::triggered, this, &MainWindow::onNewEquipment);
+    connect(m_newRentalAction, &QAction::triggered, this, &MainWindow::onNewRental);
+    connect(m_searchAction, &QAction::triggered, this, &MainWindow::onSearchCustomer);
+    connect(m_reportsAction, &QAction::triggered, this, &MainWindow::onReports);
+    connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettings);
+    connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
+    connect(m_exitAction, &QAction::triggered, this, &MainWindow::onExit);
+    
+    // Соединения кнопок
+    connect(m_addCustomerBtn, &QPushButton::clicked, this, &MainWindow::onNewCustomer);
+    connect(m_editCustomerBtn, &QPushButton::clicked, this, &MainWindow::onEditCustomer);
+    connect(m_deleteCustomerBtn, &QPushButton::clicked, this, &MainWindow::onDeleteCustomer);
+    connect(createRentalFromCustomerBtn, &QPushButton::clicked, this, [this]() {
+        if (m_selectedCustomerId == -1) {
+            QMessageBox::information(this, "Информация", "Выберите клиента в таблице");
+            return;
+        }
+        Customer* customer = Customer::loadById(m_selectedCustomerId);
+        if (!customer) {
+            QMessageBox::warning(this, "Ошибка", "Не удалось загрузить клиента");
+            return;
+        }
+        RentalDialog dialog(this);
+        // Предзаполним поле клиента
+        // RentalDialog теперь использует typeahead, поэтому проставим имя клиента
+        // через публичный API: используем setProperty как простой канал
+        dialog.setProperty("prefillCustomerName", customer->getDisplayName());
+        if (dialog.exec() == QDialog::Accepted) {
+            Rental* rental = dialog.getRental();
+            if (rental->save()) {
+                refreshRentalTable();
+                statusBar()->showMessage("Аренда успешно создана", 3000);
+            } else {
+                QMessageBox::warning(this, "Ошибка", "Не удалось создать аренду");
+            }
+            delete rental;
+        }
+        delete customer;
+    });
+    
+    connect(m_addEquipmentBtn, &QPushButton::clicked, this, &MainWindow::onNewEquipment);
+    connect(m_editEquipmentBtn, &QPushButton::clicked, this, &MainWindow::onEditEquipment);
+    connect(m_deleteEquipmentBtn, &QPushButton::clicked, this, &MainWindow::onDeleteEquipment);
+    
+    connect(m_newRentalBtn, &QPushButton::clicked, this, &MainWindow::onNewRental);
+    connect(m_completeRentalBtn, &QPushButton::clicked, this, &MainWindow::onCompleteRental);
+    connect(m_viewRentalBtn, &QPushButton::clicked, this, &MainWindow::onViewRental);
+    
+    connect(m_generateReportBtn, &QPushButton::clicked, this, &MainWindow::onReports);
+    
+    // Соединения поиска
+    connect(m_customerSearchEdit, &QLineEdit::textChanged, this, &MainWindow::onCustomerSearch);
+    connect(m_equipmentSearchEdit, &QLineEdit::textChanged, this, &MainWindow::onEquipmentSearch);
+    
+    // Соединения таблиц
+    connect(m_customerTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::onCustomerSelectionChanged);
+    connect(m_equipmentTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::onEquipmentSelectionChanged);
+    connect(m_rentalTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::onRentalSelectionChanged);
+    
+    // Двойной клик для редактирования
+    connect(m_customerTable, &QTableWidget::itemDoubleClicked, this, &MainWindow::onCustomerDoubleClicked);
+    connect(m_equipmentTable, &QTableWidget::itemDoubleClicked, this, &MainWindow::onEquipmentDoubleClicked);
+    connect(m_rentalTable, &QTableWidget::itemDoubleClicked, this, &MainWindow::onRentalDoubleClicked);
+}
+
+void MainWindow::updateStatus()
+{
+    m_statusLabel->setText("Система готова к работе");
+}
+
+void MainWindow::loadSettings()
+{
+    QSettings settings;
+    restoreGeometry(settings.value("geometry").toByteArray());
+    restoreState(settings.value("windowState").toByteArray());
+}
+
+void MainWindow::saveSettings()
+{
+    QSettings settings;
+    settings.setValue("geometry", saveGeometry());
+    settings.setValue("windowState", saveState());
+}
+
+// Слоты для обработки событий
+void MainWindow::onNewCustomer()
+{
+    m_statusLabel->setText("Создание нового клиента...");
+    CustomerDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        Customer* customer = dialog.getCustomer();
+        if (customer->save()) {
+            refreshCustomerTable();
+            statusBar()->showMessage("Клиент успешно создан", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось создать клиента");
+        }
+        delete customer;
+    }
+    m_statusLabel->setText("Готово");
+}
+
+void MainWindow::onNewEquipment()
+{
+    m_statusLabel->setText("Создание нового оборудования...");
+    EquipmentDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        Equipment* equipment = dialog.getEquipment();
+        if (equipment->save()) {
+            refreshEquipmentTable();
+            statusBar()->showMessage("Оборудование успешно создано", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось создать оборудование");
+        }
+        delete equipment;
+    }
+    m_statusLabel->setText("Готово");
+}
+
+void MainWindow::onNewRental()
+{
+    m_statusLabel->setText("Создание новой аренды...");
+    RentalDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        Rental* rental = dialog.getRental();
+        if (rental->save()) {
+            refreshRentalTable();
+            statusBar()->showMessage("Аренда успешно создана", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось создать аренду");
+        }
+        delete rental;
+    }
+    m_statusLabel->setText("Готово");
+}
+
+void MainWindow::onSearchCustomer()
+{
+    m_statusLabel->setText("Поиск клиентов...");
+    QString searchTerm = QInputDialog::getText(this, "Поиск клиентов", 
+                                             "Введите имя, телефон или email:");
+    if (!searchTerm.isEmpty()) {
+        QList<Customer*> customers = Customer::search(searchTerm);
+        displayCustomers(customers);
+        statusBar()->showMessage(QString("Найдено клиентов: %1").arg(customers.size()), 3000);
+    }
+}
+
+void MainWindow::onSearchEquipment()
+{
+    m_statusLabel->setText("Поиск оборудования...");
+    QString searchTerm = QInputDialog::getText(this, "Поиск оборудования", 
+                                             "Введите название или категорию:");
+    if (!searchTerm.isEmpty()) {
+        QList<Equipment*> equipment = Equipment::search(searchTerm);
+        displayEquipment(equipment);
+        statusBar()->showMessage(QString("Найдено оборудования: %1").arg(equipment.size()), 3000);
+    }
+}
+
+void MainWindow::onViewRentals()
+{
+    m_statusLabel->setText("Просмотр аренд...");
+    refreshRentalTable();
+    m_tabWidget->setCurrentIndex(2); // Переключаемся на вкладку аренд
+    statusBar()->showMessage("Таблица аренд обновлена", 2000);
+}
+
+void MainWindow::onReports()
+{
+    m_statusLabel->setText("Генерация отчета...");
+    
+    QString reportType = m_reportTypeCombo->currentText();
+    QDate startDate = m_reportStartDate->date();
+    QDate endDate = m_reportEndDate->date();
+    
+    QString report = QString("<h2>%1</h2>").arg(reportType);
+    report += QString("<p><b>Период:</b> %1 - %2</p>").arg(startDate.toString("dd.MM.yyyy")).arg(endDate.toString("dd.MM.yyyy"));
+    report += QString("<p><b>Дата генерации:</b> %1</p>").arg(QDateTime::currentDateTime().toString("dd.MM.yyyy HH:mm"));
+    report += "<hr>";
+    
+    // Генерируем реальные отчеты
+    if (reportType == "Отчет по арендам") {
+        QList<Rental*> rentals = Rental::getAll();
+        double totalRevenue = 0.0;
+        double totalDeposits = 0.0;
+        int totalRentals = 0;
+        int activeRentals = 0;
+        int completedRentals = 0;
+        int overdueRentals = 0;
+        
+        report += "<h3>Статистика аренд</h3>";
+        report += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
+        report += "<tr style='background-color: #1976d2; color: white;'>";
+        report += "<th>ID</th><th>Клиент</th><th>Оборудование</th><th>Количество</th><th>Дата начала</th><th>Дата окончания</th><th>Статус</th><th>Стоимость аренды</th><th>Залог</th>";
+        report += "</tr>";
+        
+        for (Rental* rental : rentals) {
+            if (rental->getStartDate().date() >= startDate && 
+                rental->getStartDate().date() <= endDate) {
+                
+                QString status = rental->getStatus();
+                if (status == "active") {
+                    if (rental->isOverdue()) {
+                        status = "Просрочено";
+                        overdueRentals++;
+                    } else {
+                        status = "Активна";
+                        activeRentals++;
+                    }
+                } else if (status == "completed") {
+                    completedRentals++;
+                }
+                
+                totalRevenue += rental->getTotalPrice();
+                totalDeposits += rental->getDeposit();
+                totalRentals++;
+                
+                report += "<tr>";
+                report += QString("<td>%1</td>").arg(rental->getId());
+                report += QString("<td>%1</td>").arg(rental->getCustomer()->getName());
+                report += QString("<td>%1</td>").arg(rental->getEquipment()->getName());
+                report += QString("<td>%1</td>").arg(rental->getQuantity());
+                report += QString("<td>%1</td>").arg(rental->getStartDate().toString("dd.MM.yyyy HH:mm"));
+                report += QString("<td>%1</td>").arg(rental->getEndDate().toString("dd.MM.yyyy HH:mm"));
+                report += QString("<td>%1</td>").arg(status);
+                report += QString("<td>%1 ₽</td>").arg(QString::number(rental->getTotalPrice(), 'f', 2));
+                report += QString("<td>%1 ₽</td>").arg(QString::number(rental->getDeposit(), 'f', 2));
+                report += "</tr>";
+            }
+        }
+        
+        report += "</table>";
+        report += "<br><h3>Итоговая статистика</h3>";
+        report += QString("<p><b>Всего аренд за период:</b> %1</p>").arg(totalRentals);
+        report += QString("<p><b>Активных аренд:</b> %1</p>").arg(activeRentals);
+        report += QString("<p><b>Завершенных аренд:</b> %1</p>").arg(completedRentals);
+        report += QString("<p><b>Просроченных аренд:</b> %1</p>").arg(overdueRentals);
+        report += QString("<p><b>Общая выручка:</b> <span style='color: green; font-weight: bold;'>%1 ₽</span></p>").arg(QString::number(totalRevenue, 'f', 2));
+        report += QString("<p><b>Общая сумма залогов:</b> <span style='color: blue; font-weight: bold;'>%1 ₽</span></p>").arg(QString::number(totalDeposits, 'f', 2));
+        
+    } else if (reportType == "Отчет по оборудованию") {
+        QList<Equipment*> equipment = Equipment::getAll();
+        report += QString("<h3>Всего оборудования: %1</h3>").arg(equipment.size());
+        
+        QMap<QString, int> categoryCount;
+        QMap<QString, double> categoryRevenue;
+        
+        for (Equipment* item : equipment) {
+            categoryCount[item->getCategory()]++;
+            // Примерная выручка (можно улучшить, добавив реальные данные)
+            categoryRevenue[item->getCategory()] += item->getPrice() * 30; // 30 дней
+        }
+        
+        report += "<h3>По категориям:</h3>";
+        report += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
+        report += "<tr style='background-color: #1976d2; color: white;'>";
+        report += "<th>Категория</th><th>Количество</th><th>Примерная месячная выручка (₽)</th>";
+        report += "</tr>";
+        
+        for (auto it = categoryCount.begin(); it != categoryCount.end(); ++it) {
+            report += "<tr>";
+            report += QString("<td>%1</td>").arg(it.key());
+            report += QString("<td>%1 шт.</td>").arg(it.value());
+            report += QString("<td>%1 ₽</td>").arg(QString::number(categoryRevenue[it.key()], 'f', 2));
+            report += "</tr>";
+        }
+        
+        report += "</table>";
+        
+    } else if (reportType == "Отчет по клиентам") {
+        QList<Customer*> customers = Customer::getAll();
+        report += QString("<h3>Всего клиентов: %1</h3>").arg(customers.size());
+        
+        // Статистика по новым клиентам за период
+        int newCustomers = 0;
+        QList<Customer*> newCustomersList;
+        
+        for (Customer* customer : customers) {
+            if (customer->getCreatedAt().date() >= startDate && 
+                customer->getCreatedAt().date() <= endDate) {
+                newCustomers++;
+                newCustomersList.append(customer);
+            }
+        }
+        
+        report += QString("<h3>Новых клиентов за период: %1</h3>").arg(newCustomers);
+        
+        if (!newCustomersList.isEmpty()) {
+            report += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
+            report += "<tr style='background-color: #1976d2; color: white;'>";
+            report += "<th>Имя</th><th>Телефон</th><th>Email</th><th>Дата регистрации</th>";
+            report += "</tr>";
+            
+            for (Customer* customer : newCustomersList) {
+                report += "<tr>";
+                report += QString("<td>%1</td>").arg(customer->getName());
+                report += QString("<td>%1</td>").arg(customer->getPhone());
+                report += QString("<td>%1</td>").arg(customer->getEmail());
+                report += QString("<td>%1</td>").arg(customer->getCreatedAt().toString("dd.MM.yyyy"));
+                report += "</tr>";
+            }
+            
+            report += "</table>";
+        }
+        
+    } else if (reportType == "Финансовый отчет") {
+        QList<Rental*> rentals = Rental::getAll();
+        double totalRevenue = 0.0;
+        double totalDeposits = 0.0;
+        double totalDamage = 0.0;
+        double totalCleaning = 0.0;
+        int totalRentals = 0;
+        int completedRentals = 0;
+        int activeRentals = 0;
+        
+        for (Rental* rental : rentals) {
+            if (rental->getStartDate().date() >= startDate && 
+                rental->getStartDate().date() <= endDate) {
+                totalRevenue += rental->getTotalPrice();
+                totalDeposits += rental->getDeposit();
+                totalDamage += rental->getDamageCost();
+                totalCleaning += rental->getCleaningCost();
+                totalRentals++;
+                
+                if (rental->getStatus() == "completed") {
+                    completedRentals++;
+                } else if (rental->getStatus() == "active") {
+                    activeRentals++;
+                }
+            }
+        }
+        
+        report += "<h3>Финансовая статистика</h3>";
+        report += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
+        report += "<tr style='background-color: #1976d2; color: white;'>";
+        report += "<th>Показатель</th><th>Значение</th>";
+        report += "</tr>";
+        report += QString("<tr><td>Общая выручка</td><td style='color: green; font-weight: bold;'>%1 ₽</td></tr>").arg(QString::number(totalRevenue, 'f', 2));
+        report += QString("<tr><td>Общие залоги</td><td style='color: blue; font-weight: bold;'>%1 ₽</td></tr>").arg(QString::number(totalDeposits, 'f', 2));
+        report += QString("<tr><td>Стоимость повреждений</td><td style='color: red; font-weight: bold;'>%1 ₽</td></tr>").arg(QString::number(totalDamage, 'f', 2));
+        report += QString("<tr><td>Стоимость уборки</td><td style='color: orange; font-weight: bold;'>%1 ₽</td></tr>").arg(QString::number(totalCleaning, 'f', 2));
+        report += QString("<tr><td>Чистая прибыль</td><td style='color: green; font-weight: bold;'>%1 ₽</td></tr>").arg(QString::number(totalRevenue - totalDamage - totalCleaning, 'f', 2));
+        report += "</table>";
+        
+        report += "<br><h3>Статистика аренд</h3>";
+        report += QString("<p><b>Всего аренд:</b> %1</p>").arg(totalRentals);
+        report += QString("<p><b>Завершенных:</b> %1</p>").arg(completedRentals);
+        report += QString("<p><b>Активных:</b> %1</p>").arg(activeRentals);
+    }
+    
+    m_reportsText->setHtml(report);
+    m_statusLabel->setText("Отчет сгенерирован");
+}
+
+void MainWindow::onSettings()
+{
+    m_statusLabel->setText("Открытие настроек...");
+    
+    // Улучшенный диалог настроек
+    QDialog settingsDialog(this);
+    settingsDialog.setWindowTitle("Настройки приложения");
+    settingsDialog.setModal(true);
+    settingsDialog.setMinimumWidth(500);
+    settingsDialog.setMinimumHeight(400);
+    
+    QVBoxLayout* layout = new QVBoxLayout(&settingsDialog);
+    
+    // Выбор темы
+    QGroupBox* themeGroup = new QGroupBox("Внешний вид", &settingsDialog);
+    QFormLayout* themeLayout = new QFormLayout(themeGroup);
+    
+    QComboBox* themeCombo = new QComboBox(&settingsDialog);
+    themeCombo->addItems({"Светлая", "Темная", "Системная"});
+    themeCombo->setCurrentText("Светлая");
+    themeLayout->addRow("Тема:", themeCombo);
+    
+    QCheckBox* autoRefreshCheck = new QCheckBox("Автообновление таблиц", &settingsDialog);
+    autoRefreshCheck->setChecked(true);
+    themeLayout->addRow("", autoRefreshCheck);
+    
+    QSpinBox* refreshIntervalSpin = new QSpinBox(&settingsDialog);
+    refreshIntervalSpin->setRange(30, 300);
+    refreshIntervalSpin->setValue(60);
+    refreshIntervalSpin->setSuffix(" сек");
+    themeLayout->addRow("Интервал обновления:", refreshIntervalSpin);
+    
+    layout->addWidget(themeGroup);
+    
+    // Настройки базы данных
+    QGroupBox* dbGroup = new QGroupBox("База данных", &settingsDialog);
+    QFormLayout* dbLayout = new QFormLayout(dbGroup);
+    
+    QPushButton* backupBtn = new QPushButton("Создать резервную копию", dbGroup);
+    QPushButton* restoreBtn = new QPushButton("Восстановить из копии", dbGroup);
+    
+    dbLayout->addRow("", backupBtn);
+    dbLayout->addRow("", restoreBtn);
+    
+    layout->addWidget(dbGroup);
+    
+    // Настройки уведомлений
+    QGroupBox* notifyGroup = new QGroupBox("Уведомления", &settingsDialog);
+    QFormLayout* notifyLayout = new QFormLayout(notifyGroup);
+    
+    QCheckBox* overdueNotifyCheck = new QCheckBox("Уведомления о просроченных арендах", notifyGroup);
+    overdueNotifyCheck->setChecked(true);
+    notifyLayout->addRow("", overdueNotifyCheck);
+    
+    QCheckBox* lowStockNotifyCheck = new QCheckBox("Уведомления о низком количестве оборудования", notifyGroup);
+    lowStockNotifyCheck->setChecked(true);
+    notifyLayout->addRow("", lowStockNotifyCheck);
+    
+    layout->addWidget(notifyGroup);
+    
+    // Кнопки
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Apply, &settingsDialog);
+    layout->addWidget(buttonBox);
+    
+    // Подключения
+    connect(buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked, [&]() {
+        QString selectedTheme = themeCombo->currentText();
+        if (selectedTheme == "Темная") {
+            loadStyleSheet("dark");
+        } else if (selectedTheme == "Светлая") {
+            loadStyleSheet("light");
+        } else {
+            loadStyleSheet("main");
+        }
+        statusBar()->showMessage("Настройки применены", 2000);
+    });
+    
+    connect(backupBtn, &QPushButton::clicked, [&]() {
+        QString fileName = QFileDialog::getSaveFileName(&settingsDialog, 
+            "Сохранить резервную копию", 
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/rental_backup.db",
+            "База данных (*.db);;Все файлы (*)");
+        
+        if (!fileName.isEmpty()) {
+            if (QFile::copy(m_database->getDatabasePath(), fileName)) {
+                QMessageBox::information(&settingsDialog, "Успех", "Резервная копия создана успешно!");
+            } else {
+                QMessageBox::warning(&settingsDialog, "Ошибка", "Не удалось создать резервную копию");
+            }
+        }
+    });
+    
+    connect(restoreBtn, &QPushButton::clicked, [&]() {
+        QString fileName = QFileDialog::getOpenFileName(&settingsDialog, 
+            "Выбрать файл для восстановления", 
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+            "База данных (*.db);;Все файлы (*)");
+        
+        if (!fileName.isEmpty()) {
+            QMessageBox::StandardButton reply = QMessageBox::question(&settingsDialog, 
+                "Подтверждение", 
+                "Восстановление базы данных приведет к потере текущих данных. Продолжить?",
+                QMessageBox::Yes | QMessageBox::No);
+            
+            if (reply == QMessageBox::Yes) {
+                // Здесь должна быть логика восстановления
+                QMessageBox::information(&settingsDialog, "Информация", 
+                    "Функция восстановления будет реализована в следующей версии");
+            }
+        }
+    });
+    
+    connect(buttonBox, &QDialogButtonBox::accepted, &settingsDialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &settingsDialog, &QDialog::reject);
+    
+    if (settingsDialog.exec() == QDialog::Accepted) {
+        QString selectedTheme = themeCombo->currentText();
+        if (selectedTheme == "Темная") {
+            loadStyleSheet("dark");
+        } else if (selectedTheme == "Светлая") {
+            loadStyleSheet("light");
+        } else {
+            loadStyleSheet("main");
+        }
+        statusBar()->showMessage("Настройки сохранены и применены", 2000);
+    }
+}
+
+void MainWindow::onAbout()
+{
+    QMessageBox::about(this, "О программе", 
+                      "Система проката туристического оборудования\n"
+                      "Версия 1.0.0\n\n"
+                      "Разработано для управления прокатом оборудования\n"
+                      "с защищенным хранением данных.");
+}
+
+void MainWindow::onExit()
+{
+    close();
+}
+
+// Дополнительные функции для редактирования и удаления
+void MainWindow::onEditCustomer()
+{
+    if (m_selectedCustomerId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите клиента для редактирования");
+        return;
+    }
+    
+    Customer* customer = Customer::loadById(m_selectedCustomerId);
+    if (!customer) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось загрузить данные клиента");
+        return;
+    }
+    
+    CustomerDialog dialog(customer, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        if (customer->update()) {
+            refreshCustomerTable();
+            statusBar()->showMessage("Клиент успешно обновлен", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось обновить клиента");
+        }
+    }
+    delete customer;
+}
+
+void MainWindow::onEditEquipment()
+{
+    if (m_selectedEquipmentId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите оборудование для редактирования");
+        return;
+    }
+    
+    Equipment* equipment = Equipment::loadById(m_selectedEquipmentId);
+    if (!equipment) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось загрузить данные оборудования");
+        return;
+    }
+    
+    EquipmentDialog dialog(equipment, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        if (equipment->update()) {
+            refreshEquipmentTable();
+            statusBar()->showMessage("Оборудование успешно обновлено", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось обновить оборудование");
+        }
+    }
+    delete equipment;
+}
+
+void MainWindow::onDeleteCustomer()
+{
+    if (m_selectedCustomerId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите клиента для удаления");
+        return;
+    }
+    
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Подтверждение", 
+        "Вы уверены, что хотите удалить этого клиента? Это действие нельзя отменить.",
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (reply == QMessageBox::Yes) {
+        Customer* customer = Customer::loadById(m_selectedCustomerId);
+        if (customer && customer->remove()) {
+            refreshCustomerTable();
+            m_selectedCustomerId = -1;
+            statusBar()->showMessage("Клиент успешно удален", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось удалить клиента");
+        }
+        delete customer;
+    }
+}
+
+void MainWindow::onDeleteEquipment()
+{
+    if (m_selectedEquipmentId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите оборудование для удаления");
+        return;
+    }
+    
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Подтверждение", 
+        "Вы уверены, что хотите удалить это оборудование? Это действие нельзя отменить.",
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (reply == QMessageBox::Yes) {
+        Equipment* equipment = Equipment::loadById(m_selectedEquipmentId);
+        if (equipment && equipment->remove()) {
+            refreshEquipmentTable();
+            m_selectedEquipmentId = -1;
+            statusBar()->showMessage("Оборудование успешно удалено", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось удалить оборудование");
+        }
+        delete equipment;
+    }
+}
+
+void MainWindow::onCompleteRental()
+{
+    if (m_selectedRentalId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите аренду для завершения");
+        return;
+    }
+    
+    Rental* rental = Rental::loadById(m_selectedRentalId);
+    if (!rental) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось загрузить данные аренды");
+        return;
+    }
+    
+    // Диалог для завершения аренды
+    QDialog dialog(this);
+    dialog.setWindowTitle("Завершение аренды");
+    dialog.setModal(true);
+    dialog.setMinimumWidth(400);
+    
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    QFormLayout* formLayout = new QFormLayout();
+    
+    QDoubleSpinBox* damageCostSpin = new QDoubleSpinBox(&dialog);
+    damageCostSpin->setRange(0, 10000);
+    damageCostSpin->setSuffix(" ₽");
+    formLayout->addRow("Стоимость повреждений:", damageCostSpin);
+    
+    QDoubleSpinBox* cleaningCostSpin = new QDoubleSpinBox(&dialog);
+    cleaningCostSpin->setRange(0, 1000);
+    cleaningCostSpin->setSuffix(" ₽");
+    formLayout->addRow("Стоимость уборки:", cleaningCostSpin);
+    
+    QDoubleSpinBox* finalDepositSpin = new QDoubleSpinBox(&dialog);
+    finalDepositSpin->setRange(0, rental->getDeposit());
+    finalDepositSpin->setValue(rental->getDeposit());
+    finalDepositSpin->setSuffix(" ₽");
+    formLayout->addRow("Возврат залога:", finalDepositSpin);
+    
+    QTextEdit* notesEdit = new QTextEdit(&dialog);
+    notesEdit->setMaximumHeight(100);
+    notesEdit->setPlaceholderText("Дополнительные заметки...");
+    formLayout->addRow("Заметки:", notesEdit);
+    
+    layout->addLayout(formLayout);
+    
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttonBox);
+    
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    
+    if (dialog.exec() == QDialog::Accepted) {
+        if (rental->complete(damageCostSpin->value(), cleaningCostSpin->value(), 
+                           finalDepositSpin->value(), notesEdit->toPlainText())) {
+            refreshRentalTable();
+            statusBar()->showMessage("Аренда успешно завершена", 3000);
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось завершить аренду");
+        }
+    }
+    delete rental;
+}
+
+void MainWindow::onViewRental()
+{
+    if (m_selectedRentalId == -1) {
+        QMessageBox::information(this, "Информация", "Выберите аренду для просмотра");
+        return;
+    }
+    
+    Rental* rental = Rental::loadById(m_selectedRentalId);
+    if (!rental) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось загрузить данные аренды");
+        return;
+    }
+    
+    // Диалог для просмотра деталей аренды
+    QDialog dialog(this);
+    dialog.setWindowTitle("Детали аренды");
+    dialog.setModal(true);
+    dialog.setMinimumWidth(500);
+    
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    
+    QFormLayout* formLayout = new QFormLayout();
+    
+    QLabel* customerLabel = new QLabel(rental->getCustomer()->getName(), &dialog);
+    formLayout->addRow("Клиент:", customerLabel);
+    
+    QLabel* equipmentLabel = new QLabel(rental->getEquipment()->getName(), &dialog);
+    formLayout->addRow("Оборудование:", equipmentLabel);
+    
+    QLabel* quantityLabel = new QLabel(QString::number(rental->getQuantity()), &dialog);
+    formLayout->addRow("Количество:", quantityLabel);
+    
+    QLabel* startDateLabel = new QLabel(rental->getStartDate().toString("dd.MM.yyyy HH:mm"), &dialog);
+    formLayout->addRow("Дата начала:", startDateLabel);
+    
+    QLabel* endDateLabel = new QLabel(rental->getEndDate().toString("dd.MM.yyyy HH:mm"), &dialog);
+    formLayout->addRow("Дата окончания:", endDateLabel);
+    
+    QLabel* totalPriceLabel = new QLabel(QString::number(rental->getTotalPrice(), 'f', 2) + " ₽", &dialog);
+    formLayout->addRow("Стоимость аренды:", totalPriceLabel);
+    
+    QLabel* depositLabel = new QLabel(QString::number(rental->getDeposit(), 'f', 2) + " ₽", &dialog);
+    formLayout->addRow("Залог:", depositLabel);
+    
+    QLabel* statusLabel = new QLabel(rental->getStatusText(), &dialog);
+    formLayout->addRow("Статус:", statusLabel);
+    
+    QLabel* notesLabel = new QLabel(rental->getNotes(), &dialog);
+    formLayout->addRow("Заметки:", notesLabel);
+    
+    layout->addLayout(formLayout);
+    
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    layout->addWidget(buttonBox);
+    
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    
+    dialog.exec();
+    delete rental;
+}
+
+void MainWindow::onCustomerSearch()
+{
+    QString searchTerm = m_customerSearchEdit->text().trimmed();
+    if (searchTerm.isEmpty()) {
+        refreshCustomerTable();
+    } else {
+        QList<Customer*> customers = Customer::search(searchTerm);
+        displayCustomers(customers);
+    }
+}
+
+void MainWindow::onEquipmentSearch()
+{
+    QString searchTerm = m_equipmentSearchEdit->text().trimmed();
+    if (searchTerm.isEmpty()) {
+        refreshEquipmentTable();
+    } else {
+        QList<Equipment*> equipment = Equipment::search(searchTerm);
+        displayEquipment(equipment);
+    }
+}
+
+void MainWindow::onCustomerSelectionChanged()
+{
+    QList<QTableWidgetItem*> selectedItems = m_customerTable->selectedItems();
+    if (selectedItems.isEmpty()) {
+        m_selectedCustomerId = -1;
+        m_editCustomerBtn->setEnabled(false);
+        m_deleteCustomerBtn->setEnabled(false);
+    } else {
+        int row = selectedItems.first()->row();
+        m_selectedCustomerId = m_customerTable->item(row, 0)->text().toInt();
+        m_editCustomerBtn->setEnabled(true);
+        m_deleteCustomerBtn->setEnabled(true);
+    }
+}
+
+void MainWindow::onEquipmentSelectionChanged()
+{
+    QList<QTableWidgetItem*> selectedItems = m_equipmentTable->selectedItems();
+    if (selectedItems.isEmpty()) {
+        m_selectedEquipmentId = -1;
+        m_editEquipmentBtn->setEnabled(false);
+        m_deleteEquipmentBtn->setEnabled(false);
+    } else {
+        int row = selectedItems.first()->row();
+        m_selectedEquipmentId = m_equipmentTable->item(row, 0)->text().toInt();
+        m_editEquipmentBtn->setEnabled(true);
+        m_deleteEquipmentBtn->setEnabled(true);
+    }
+}
+
+void MainWindow::onRentalSelectionChanged()
+{
+    QList<QTableWidgetItem*> selectedItems = m_rentalTable->selectedItems();
+    if (selectedItems.isEmpty()) {
+        m_selectedRentalId = -1;
+        m_completeRentalBtn->setEnabled(false);
+        m_viewRentalBtn->setEnabled(false);
+    } else {
+        int row = selectedItems.first()->row();
+        m_selectedRentalId = m_rentalTable->item(row, 0)->text().toInt();
+        m_completeRentalBtn->setEnabled(true);
+        m_viewRentalBtn->setEnabled(true);
+    }
+}
+
+void MainWindow::onCustomerDoubleClicked()
+{
+    onEditCustomer();
+}
+
+void MainWindow::onEquipmentDoubleClicked()
+{
+    onEditEquipment();
+}
+
+void MainWindow::onRentalDoubleClicked()
+{
+    onViewRental();
+}
+
+// Table refresh methods
+void MainWindow::refreshCustomerTable()
+{
+    QList<Customer*> customers = Customer::getAll();
+    displayCustomers(customers);
+}
+
+void MainWindow::refreshEquipmentTable()
+{
+    QList<Equipment*> equipment = Equipment::getAll();
+    displayEquipment(equipment);
+}
+
+void MainWindow::refreshRentalTable()
+{
+    QList<Rental*> rentals = Rental::getAll();
+    displayRentals(rentals);
+}
+
+// Display methods
+void MainWindow::displayCustomers(const QList<Customer*>& customers)
+{
+    m_customerTable->setRowCount(0);
+    
+    for (Customer* customer : customers) {
+        int row = m_customerTable->rowCount();
+        m_customerTable->insertRow(row);
+        
+        m_customerTable->setItem(row, 0, new QTableWidgetItem(QString::number(customer->getId())));
+        m_customerTable->setItem(row, 1, new QTableWidgetItem(customer->getName()));
+        m_customerTable->setItem(row, 2, new QTableWidgetItem(customer->getPhone()));
+        m_customerTable->setItem(row, 3, new QTableWidgetItem(customer->getEmail()));
+        m_customerTable->setItem(row, 4, new QTableWidgetItem(customer->getPassport()));
+        m_customerTable->setItem(row, 5, new QTableWidgetItem(customer->getAddress()));
+    }
+}
+
+void MainWindow::displayEquipment(const QList<Equipment*>& equipment)
+{
+    m_equipmentTable->setRowCount(0);
+    
+    for (Equipment* item : equipment) {
+        int row = m_equipmentTable->rowCount();
+        m_equipmentTable->insertRow(row);
+        
+        m_equipmentTable->setItem(row, 0, new QTableWidgetItem(QString::number(item->getId())));
+        m_equipmentTable->setItem(row, 1, new QTableWidgetItem(item->getName()));
+        m_equipmentTable->setItem(row, 2, new QTableWidgetItem(item->getCategory()));
+        m_equipmentTable->setItem(row, 3, new QTableWidgetItem(QString::number(item->getPrice(), 'f', 2) + " ₽"));
+        m_equipmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(item->getDeposit(), 'f', 2) + " ₽"));
+        m_equipmentTable->setItem(row, 5, new QTableWidgetItem(QString::number(item->getQuantity())));
+        m_equipmentTable->setItem(row, 6, new QTableWidgetItem(item->isAvailable() ? "Доступно" : "Недоступно"));
+    }
+}
+
+void MainWindow::displayRentals(const QList<Rental*>& rentals)
+{
+    m_rentalTable->setRowCount(0);
+    
+    for (Rental* rental : rentals) {
+        int row = m_rentalTable->rowCount();
+        m_rentalTable->insertRow(row);
+        
+        m_rentalTable->setItem(row, 0, new QTableWidgetItem(QString::number(rental->getId())));
+        m_rentalTable->setItem(row, 1, new QTableWidgetItem(rental->getCustomer()->getName()));
+        m_rentalTable->setItem(row, 2, new QTableWidgetItem(rental->getEquipment()->getName()));
+        m_rentalTable->setItem(row, 3, new QTableWidgetItem(QString::number(rental->getQuantity())));
+        m_rentalTable->setItem(row, 4, new QTableWidgetItem(rental->getStartDate().toString("dd.MM.yyyy HH:mm")));
+        m_rentalTable->setItem(row, 5, new QTableWidgetItem(rental->getEndDate().toString("dd.MM.yyyy HH:mm")));
+        m_rentalTable->setItem(row, 6, new QTableWidgetItem(rental->getStatusText()));
+        m_rentalTable->setItem(row, 7, new QTableWidgetItem(QString::number(rental->getTotalPrice(), 'f', 2) + " ₽"));
+        m_rentalTable->setItem(row, 8, new QTableWidgetItem(QString::number(rental->getDeposit(), 'f', 2) + " ₽"));
+    }
+}
+
+// Style methods
+void MainWindow::loadStyleSheet(const QString& theme)
+{
+    QFile file(QString(":/styles/%1.qss").arg(theme));
+    if (file.open(QFile::ReadOnly | QFile::Text)) {
+        QString style = file.readAll();
+        qApp->setStyleSheet(style);
+        file.close();
+    }
+} 

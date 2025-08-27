@@ -1,0 +1,22 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/app.png</file>
+        <file>icons/customer.png</file>
+        <file>icons/equipment.png</file>
+        <file>icons/rental.png</file>
+        <file>icons/reports.png</file>
+        <file>icons/settings.png</file>
+        <file>icons/add.png</file>
+        <file>icons/edit.png</file>
+        <file>icons/delete.png</file>
+        <file>icons/search.png</file>
+        <file>icons/print.png</file>
+        <file>icons/export.png</file>
+        <file>icons/security.png</file>
+        <file>icons/backup.png</file>
+        <file>icons/restore.png</file>
+        <file>styles/main.qss</file>
+        <file>styles/dark.qss</file>
+        <file>styles/light.qss</file>
+    </qresource>
+</RCC> 
