@@ -152,3 +152,4 @@ docker swarm init
 # Развернуть stack
 docker stack deploy -c docker-compose.yml tourist-rental
 ```
+

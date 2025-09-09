@@ -44,3 +44,4 @@ templates/
 # Локальные настройки
 .env
 .env.local
+
