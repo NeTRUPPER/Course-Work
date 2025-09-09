@@ -1,0 +1,46 @@
+# .dockerignore
+
+# Исключаем ненужные файлы из Docker контекста
+
+# Build директории
+build/
+cmake-build-*/
+
+# IDE файлы
+.vscode/
+.idea/
+*.pro.user
+*.pro.user.*
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Документация (копируем только нужную)
+*.md
+!README.md
+!DOCKER.md
+
+# Временные файлы
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+
+# Архивы
+*.tar.gz
+*.zip
+*.rar
+
+# Данные приложения (будут монтироваться)
+data/
+templates/
+
+# Локальные настройки
+.env
+.env.local

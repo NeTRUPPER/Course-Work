@@ -9,6 +9,7 @@
 #include <QDataStream>
 #include <QBuffer>
 #include <QIODevice>
+#include <QMessageAuthenticationCode>
 
 Security* Security::m_instance = nullptr;
 
@@ -85,6 +86,41 @@ bool Security::authenticate()
     m_instance->m_isAuthenticated = true;
     startSession();
     return true;
+}
+
+QString Security::authenticateAndGetPassword(int maxAttempts)
+{
+    initialize();
+    if (!hasMasterPassword()) {
+        bool ok;
+        QString pw1 = QInputDialog::getText(nullptr, "Установка мастер-пароля",
+                                            "Установите мастер-пароль:", QLineEdit::Password, "", &ok);
+        if (!ok || pw1.isEmpty()) return QString();
+        QString pw2 = QInputDialog::getText(nullptr, "Подтверждение пароля",
+                                            "Повторите мастер-пароль:", QLineEdit::Password, "", &ok);
+        if (!ok || pw1 != pw2) {
+            QMessageBox::warning(nullptr, "Ошибка", "Пароли не совпадают");
+            return QString();
+        }
+        if (!setMasterPassword(pw1)) return QString();
+        // После первичной установки сразу используем этот пароль без повторного запроса
+        m_instance->m_isAuthenticated = true;
+        startSession();
+        return pw1;
+    }
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        bool ok;
+        QString password = QInputDialog::getText(nullptr, "Аутентификация",
+                                                 "Введите мастер-пароль:", QLineEdit::Password, "", &ok);
+        if (!ok) return QString();
+        if (verifyMasterPassword(password)) {
+            m_instance->m_isAuthenticated = true;
+            startSession();
+            return password;
+        }
+        QMessageBox::critical(nullptr, "Ошибка", "Неверный пароль");
+    }
+    return QString();
 }
 
 bool Security::changePassword()
@@ -199,9 +235,8 @@ bool Security::setMasterPassword(const QString& password)
     QSettings settings;
     settings.setValue("security/master_password_hash", hash);
     settings.setValue("security/salt", salt);
-    
-    // Генерируем ключ шифрования
-    m_instance->m_encryptionKey = generateEncryptionKey();
+    // Ключ шифрования больше не запрашиваем отдельно
+    m_instance->m_encryptionKey.clear();
     
     return true;
 }
@@ -320,21 +355,34 @@ QString Security::hashPassword(const QString& password, const QString& salt)
 
 QByteArray Security::generateEncryptionKey()
 {
-    if (!m_instance) {
-        return QByteArray();
+    // Устарело: ключ теперь выводится PBKDF2 при открытии БД
+    return QByteArray();
+}
+
+QByteArray Security::deriveKeyFromPassword(const QString& password, const QByteArray& salt, int iterations)
+{
+    // PBKDF2-HMAC-SHA256
+    QByteArray key(32, 0);
+    int blocks = (key.size() + 31) / 32;
+    for (int block = 1; block <= blocks; ++block) {
+        QByteArray u;
+        QByteArray t(32, 0);
+        // U1 = HMAC(password, salt || INT(block))
+        QByteArray data = salt;
+        data.append(char((block >> 24) & 0xFF));
+        data.append(char((block >> 16) & 0xFF));
+        data.append(char((block >> 8) & 0xFF));
+        data.append(char(block & 0xFF));
+        u = QMessageAuthenticationCode::hash(data, password.toUtf8(), QCryptographicHash::Sha256);
+        t = u;
+        for (int i = 1; i < iterations; ++i) {
+            u = QMessageAuthenticationCode::hash(u, password.toUtf8(), QCryptographicHash::Sha256);
+            for (int j = 0; j < 32; ++j) t[j] = t[j] ^ u[j];
+        }
+        for (int k = 0; k < 32 && (k + (block - 1) * 32) < key.size(); ++k) {
+            key[k + (block - 1) * 32] = t[k];
+        }
     }
-    
-    QString masterPassword = QInputDialog::getText(nullptr, "Ключ шифрования",
-                                                  "Введите мастер-пароль для генерации ключа:",
-                                                  QLineEdit::Password);
-    if (masterPassword.isEmpty()) {
-        return QByteArray();
-    }
-    
-    // Генерируем ключ на основе мастер-пароля
-    QByteArray data = masterPassword.toUtf8();
-    QByteArray key = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
-    
     return key;
 }
 

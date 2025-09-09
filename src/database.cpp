@@ -10,6 +10,8 @@
 #include <QCryptographicHash>
 #include <QFile> // Added for backup/restore
 #include <QMetaType>
+#include <QSqlDriver>
+#include "security.h"
 #include <QVariant>
 
 Database* Database::m_instance = nullptr;
@@ -55,7 +57,8 @@ void Database::initialize(const QString& dbPath)
 
 bool Database::setupEncryption()
 {
-    // Для упрощения убираем шифрование
+    // Enable SQLCipher key if driver supports PRAGMA key
+    if (!m_db.isOpen()) return true; // will key after open
     return true;
 }
 
@@ -64,6 +67,27 @@ bool Database::openDatabase(const QString& password)
     if (!m_db.open()) {
         qDebug() << "Ошибка открытия базы данных:" << m_db.lastError().text();
         return false;
+    }
+    // Derive key from provided password or master password
+    QString pw = password;
+    if (pw.isEmpty()) {
+        pw = Security::authenticateAndGetPassword();
+        if (pw.isEmpty()) {
+            qDebug() << "Аутентификация отклонена";
+            return false;
+        }
+    }
+    QByteArray salt("tourist_rental_salt");
+    QByteArray key = Security::deriveKeyFromPassword(pw, salt, 200000);
+    // Apply PRAGMA key (hex)
+    QString hexKey = key.toHex();
+    QSqlQuery keyQuery(m_db);
+    keyQuery.exec(QString("PRAGMA key = \"x'%1'\";").arg(hexKey));
+    // Verify key
+    keyQuery.exec("PRAGMA cipher_version;");
+    if (!keyQuery.next()) {
+        qDebug() << "SQLCipher key failed";
+        // continue but warn
     }
     
     // Гарантируем наличие таблиц (идемпотентно)

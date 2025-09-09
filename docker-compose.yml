@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  tourist-rental-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tourist-rental-system
+    environment:
+      - QT_QPA_PLATFORM=xcb
+      - QT_PLUGIN_PATH=/app/sqldrivers
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      # Данные приложения (база данных, настройки)
+      - ./data:/app/data
+      # Шаблоны документов
+      - ./templates:/app/templates
+      # X11 для GUI (Linux)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Настройки Qt
+      - ~/.config:/home/appuser/.config:rw
+    network_mode: host
+    # Для Windows с WSL2
+    # network_mode: bridge
+    # ports:
+    #   - "8080:8080"
+    restart: unless-stopped
+    # Для безопасности
+    security_opt:
+      - seccomp:unconfined
+    # Доступ к GPU (если нужно)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+# Создание необходимых директорий при первом запуске
+volumes:
+  app_data:
+    driver: local
+  app_templates:
+    driver: local

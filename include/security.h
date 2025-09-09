@@ -23,6 +23,7 @@ class Security : public QObject
 public:
     static void initialize();
     static bool authenticate();
+    static QString authenticateAndGetPassword(int maxAttempts = 5);
     static bool changePassword();
     static bool isAuthenticated();
     static void logout();
@@ -50,6 +51,7 @@ public:
     
     // Encryption key generation (public for Database access)
     static QByteArray generateEncryptionKey();
+    static QByteArray deriveKeyFromPassword(const QString& password, const QByteArray& salt, int iterations = 200000);
 
 private:
     static Security* m_instance;
