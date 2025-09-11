@@ -120,11 +120,26 @@ QLineEdit::placeholder, QTextEdit::placeholder {
 QTableWidget, QTableView {
     background: #ffffff;
     color: #111111;
-    gridline-color: #e5e5e5;
+    gridline-color: #e8e8e8;
     border: 1px solid #e5e5e5;
-    selection-background-color: #efefef;
+    alternate-background-color: #f6f8fc; /* светлый фон для четных строк */
+    selection-background-color: #dbe7ff; /* мягкая подсветка выделения */
     selection-color: #111111;
 }
+
+/* Чётные/нечётные строки: гарантируем контраст */
+QTableWidget::item:!selected, QTableView::item:!selected {
+    background: #ffffff;
+    color: #111111;
+}
+QTableWidget::item:!selected:alternate, QTableView::item:!selected:alternate {
+    background: #f6f8fc;
+    color: #111111;
+}
+
+/* Немного воздуха для строк */
+QTableWidget::item, QTableView::item { padding: 6px; }
+
 QHeaderView::section {
     background: #fafafa;
     color: #111111;

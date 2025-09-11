@@ -1,3 +1,8 @@
+// ------------------------------------------------------------
+// Файл: mainwindow.cpp
+// Назначение: Реализация главного окна приложения, вкладок,
+// меню, тулбара, обработчиков событий и печати договора.
+// ------------------------------------------------------------
 #include "mainwindow.h"
 #include "database.h"
 #include "rentalmanager.h"
@@ -47,8 +52,8 @@ MainWindow::MainWindow(QWidget *parent)
     refreshEquipmentTable();
     refreshRentalTable();
     
-    // Загружаем стили
-    loadStyleSheet("main");
+    // Загружаем единственный светлый стиль
+    loadStyleSheet("light");
     
     // Обновление статуса
     updateStatus();
@@ -177,9 +182,7 @@ void MainWindow::createCustomerTab()
     m_customerSearchEdit = new QLineEdit();
     m_customerSearchEdit->setPlaceholderText("Поиск клиентов...");
     m_customerSearchEdit->setProperty("search", true);
-    QPushButton *searchBtn = new QPushButton("Поиск");
     searchLayout->addWidget(m_customerSearchEdit);
-    searchLayout->addWidget(searchBtn);
     layout->addLayout(searchLayout);
     
     // Таблица клиентов
@@ -224,9 +227,7 @@ void MainWindow::createEquipmentTab()
     m_equipmentSearchEdit = new QLineEdit();
     m_equipmentSearchEdit->setPlaceholderText("Поиск оборудования...");
     m_equipmentSearchEdit->setProperty("search", true);
-    QPushButton *searchBtn = new QPushButton("Поиск");
     searchLayout->addWidget(m_equipmentSearchEdit);
-    searchLayout->addWidget(searchBtn);
     layout->addLayout(searchLayout);
     
     // Таблица оборудования
@@ -715,26 +716,18 @@ void MainWindow::onSettings()
     
     QVBoxLayout* layout = new QVBoxLayout(&settingsDialog);
     
-    // Выбор темы
-    QGroupBox* themeGroup = new QGroupBox("Внешний вид", &settingsDialog);
-    QFormLayout* themeLayout = new QFormLayout(themeGroup);
-    
-    QComboBox* themeCombo = new QComboBox(&settingsDialog);
-    themeCombo->addItems({"Светлая", "Темная", "Системная"});
-    themeCombo->setCurrentText("Светлая");
-    themeLayout->addRow("Тема:", themeCombo);
-    
+    // Внешний вид (упрощено): оставляем только параметры обновления
+    QGroupBox* uiGroup = new QGroupBox("Интерфейс", &settingsDialog);
+    QFormLayout* uiLayout = new QFormLayout(uiGroup);
     QCheckBox* autoRefreshCheck = new QCheckBox("Автообновление таблиц", &settingsDialog);
     autoRefreshCheck->setChecked(true);
-    themeLayout->addRow("", autoRefreshCheck);
-    
+    uiLayout->addRow("", autoRefreshCheck);
     QSpinBox* refreshIntervalSpin = new QSpinBox(&settingsDialog);
     refreshIntervalSpin->setRange(30, 300);
     refreshIntervalSpin->setValue(60);
     refreshIntervalSpin->setSuffix(" сек");
-    themeLayout->addRow("Интервал обновления:", refreshIntervalSpin);
-    
-    layout->addWidget(themeGroup);
+    uiLayout->addRow("Интервал обновления:", refreshIntervalSpin);
+    layout->addWidget(uiGroup);
     
     // Настройки базы данных
     QGroupBox* dbGroup = new QGroupBox("База данных", &settingsDialog);
@@ -769,14 +762,7 @@ void MainWindow::onSettings()
     
     // Подключения
     connect(buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked, [&]() {
-        QString selectedTheme = themeCombo->currentText();
-        if (selectedTheme == "Темная") {
-            loadStyleSheet("dark");
-        } else if (selectedTheme == "Светлая") {
-            loadStyleSheet("light");
-        } else {
-            loadStyleSheet("main");
-        }
+        loadStyleSheet("light");
         statusBar()->showMessage("Настройки применены", 2000);
     });
     
@@ -819,14 +805,7 @@ void MainWindow::onSettings()
     connect(buttonBox, &QDialogButtonBox::rejected, &settingsDialog, &QDialog::reject);
     
     if (settingsDialog.exec() == QDialog::Accepted) {
-        QString selectedTheme = themeCombo->currentText();
-        if (selectedTheme == "Темная") {
-            loadStyleSheet("dark");
-        } else if (selectedTheme == "Светлая") {
-            loadStyleSheet("light");
-        } else {
-            loadStyleSheet("main");
-        }
+        loadStyleSheet("light");
         statusBar()->showMessage("Настройки сохранены и применены", 2000);
     }
 }

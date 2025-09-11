@@ -95,9 +95,6 @@ ENV QT_DEBUG_PLUGINS=0
 # Точка входа
 ENTRYPOINT ["./TouristRentalApp"]
 
-# Экспорт портов (если понадобится для веб-интерфейса в будущем)
-EXPOSE 8080
-
 # Монтирование данных
 VOLUME ["/app/data"]
 

@@ -15,8 +15,6 @@
         <file>icons/security.png</file>
         <file>icons/backup.png</file>
         <file>icons/restore.png</file>
-        <file>styles/main.qss</file>
-        <file>styles/dark.qss</file>
         <file>styles/light.qss</file>
     </qresource>
 </RCC> 

@@ -7,9 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Find Qt6 components
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql PrintSupport)
 
-# Find SQLCipher
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SQLCIPHER REQUIRED sqlcipher)
 
 # Set up Qt6
 set(CMAKE_AUTOMOC ON)
@@ -18,7 +15,7 @@ set(CMAKE_AUTOUIC ON)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${SQLCIPHER_INCLUDE_DIRS})
+ 
 
 # Source files
 set(SOURCES
@@ -71,11 +68,9 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Widgets 
     Qt6::Sql
     Qt6::PrintSupport
-    ${SQLCIPHER_LIBRARIES}
 )
 
 # Set compiler flags
-target_compile_options(${PROJECT_NAME} PRIVATE ${SQLCIPHER_CFLAGS_OTHER})
 
 # Install
 install(TARGETS ${PROJECT_NAME} DESTINATION bin) 
