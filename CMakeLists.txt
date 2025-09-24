@@ -11,7 +11,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql PrintSupport)
 # Set up Qt6
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOUIC OFF)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -30,6 +30,12 @@ set(SOURCES
     src/customerdialog.cpp
     src/equipmentdialog.cpp
     src/rentaldialog.cpp
+    src/AdminGuard.cpp
+    src/AdminSession.cpp
+    src/AdminPasswordManager.cpp
+    src/AdminAuthDialog.cpp
+    src/AuditLogger.cpp
+    src/AuditLogDialog.cpp
 )
 
 # Header files
@@ -44,6 +50,13 @@ set(HEADERS
     include/customerdialog.h
     include/equipmentdialog.h
     include/rentaldialog.h
+    include/AdminAuthDialog.h
+    include/AdminGuard.h
+    include/AdminSession.h
+    include/AdminPasswordManager.h
+    include/AuditLogger.h
+    include/AuditLogDialog.h
+    
 )
 
 # UI files

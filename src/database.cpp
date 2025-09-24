@@ -5,19 +5,6 @@
 // Аутентификация выполняется до открытия базы.
 // ------------------------------------------------------------
 #include "database.h"
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QDebug>
-#include <QDir>
-#include <QStandardPaths>
-#include <QMessageBox>
-#include <QApplication>
-#include <QDateTime>
-#include <QCryptographicHash>
-#include <QFile> // Added for backup/restore
-#include <QMetaType>
-#include "security.h"
-#include <QVariant>
 
 Database* Database::m_instance = nullptr;
 
@@ -644,47 +631,100 @@ QSqlQuery Database::getFinancialReport(const QDateTime& start, const QDateTime& 
     return query;
 } 
 
-// Utility methods
+// Экранируем путь для SQL-литерала
+static QString sqlQuotePath(const QString& p) {
+    QString s = QDir::toNativeSeparators(p);
+    s.replace('\'', "''");
+    return "'" + s + "'";
+}
+
 bool Database::backupDatabase(const QString& backupPath)
 {
-    if (!m_isOpen) {
+    if (backupPath.isEmpty()) return false;
+    if (!m_db.isValid()) return false;
+    if (!m_db.isOpen() && !m_db.open()) return false;
+
+    // Нельзя бэкапить в сам же файл
+    if (QFileInfo(backupPath).canonicalFilePath() == QFileInfo(m_dbPath).canonicalFilePath())
         return false;
+
+    // Гарантируем каталог и чистим возможные старые копии
+    const QFileInfo dst(backupPath);
+    QDir().mkpath(dst.absolutePath());
+    QFile::remove(backupPath);
+    QFile::remove(backupPath + "-wal");
+    QFile::remove(backupPath + "-shm");
+
+    // Попытка 1: VACUUM INTO (консистентная копия)
+    {
+        QSqlQuery pragma(m_db);
+        pragma.exec("PRAGMA wal_checkpoint(TRUNCATE);"); // не помешает
+        QSqlQuery q(m_db);
+        const QString sql = "VACUUM INTO " + sqlQuotePath(backupPath) + ";";
+        if (q.exec(sql)) {
+            return true;
+        }
+        // если SQLite не поддерживает VACUUM INTO — пойдём в фолбэк
     }
-    
-    // Закрываем текущее соединение
-    m_db.close();
-    
-    // Копируем файл базы данных
-    if (QFile::copy(m_dbPath, backupPath)) {
-        // Открываем базу данных снова
-        m_db.open();
-        return true;
+
+    // Попытка 2 (фолбэк): блокируем записи и копируем файлы
+    bool ok = true;
+    {
+        QSqlQuery q(m_db);
+        q.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        ok = q.exec("BEGIN IMMEDIATE;"); // эксклюзивная блокировка на запись
+
+        ok = ok && QFile::copy(m_dbPath, backupPath);
+
+        const QString wal = m_dbPath + "-wal";
+        const QString shm = m_dbPath + "-shm";
+        if (QFile::exists(wal))      ok = ok && QFile::copy(wal, backupPath + "-wal");
+        if (QFile::exists(shm))      ok = ok && QFile::copy(shm, backupPath + "-shm");
+
+        q.exec("COMMIT;");
     }
-    
-    // Если копирование не удалось, пытаемся открыть базу данных снова
-    m_db.open();
-    return false;
+    return ok;
 }
 
 bool Database::restoreDatabase(const QString& backupPath)
 {
-    if (!QFile::exists(backupPath)) {
-        return false;
-    }
-    
-    // Закрываем текущее соединение
-    m_db.close();
-    
-    // Удаляем текущую базу данных
+    if (!QFile::exists(backupPath)) return false;
+
+    // 1) Полностью разрываем текущее соединение
+    const QString conn = m_db.connectionName();
+    if (m_db.isOpen()) m_db.close();
+    m_isOpen = false;
+
+    // Сбрасываем хэндл и удаляем соединение из пула (важно для снятия файловых дескрипторов)
+    m_db = QSqlDatabase();                // сброс ссылки
+    QSqlDatabase::removeDatabase(conn);   // теперь файлы можно заменять
+
+    // 2) Удаляем текущую БД и служебные файлы
     QFile::remove(m_dbPath);
-    
-    // Копируем резервную копию
-    if (QFile::copy(backupPath, m_dbPath)) {
-        // Открываем восстановленную базу данных
-        m_db.open();
-        m_isOpen = true;
-        return true;
-    }
-    
-    return false;
-} 
+    QFile::remove(m_dbPath + "-wal");
+    QFile::remove(m_dbPath + "-shm");
+
+    // 3) Копируем бэкап на место
+    bool ok = QFile::copy(backupPath, m_dbPath);
+    if (!ok) return false;
+
+    // Если бэкап делали старым способом и рядом есть -wal/-shm — перенесём их тоже
+    if (QFile::exists(backupPath + "-wal"))
+        ok = ok && QFile::copy(backupPath + "-wal", m_dbPath + "-wal");
+    if (QFile::exists(backupPath + "-shm"))
+        ok = ok && QFile::copy(backupPath + "-shm", m_dbPath + "-shm");
+
+    if (!ok) return false;
+
+    // 4) Поднимаем соединение заново
+    m_db = QSqlDatabase::addDatabase("QSQLITE", conn);
+    m_db.setDatabaseName(m_dbPath);
+    m_isOpen = m_db.open();
+    if (!m_isOpen) return false;
+
+    // 5) Базовые pragma
+    QSqlQuery pq(m_db);
+    pq.exec("PRAGMA foreign_keys=ON;");
+
+    return true;
+}

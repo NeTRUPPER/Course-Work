@@ -4,23 +4,6 @@
 // меню, тулбара, обработчиков событий и печати договора.
 // ------------------------------------------------------------
 #include "mainwindow.h"
-#include "database.h"
-#include "rentalmanager.h"
-#include "security.h"
-#include "customerdialog.h"
-#include "equipmentdialog.h"
-#include "rentaldialog.h"
-#include <QApplication>
-#include <QMessageBox>
-#include <QInputDialog>
-#include <QFileDialog>
-
-#include <QTextDocument>
-#include <QDateTime>
-#include <QTimer>
-#include <QSettings>
-#include <QStyle>
-#include <QScreen>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -37,6 +20,12 @@ MainWindow::MainWindow(QWidget *parent)
     setupCentralWidget();
     setupConnections();
     
+    setupSecurityMenu();                // добавим меню и действия
+    m_adminSession.clear();             // на старте режим админа выключен
+    statusBar()->showMessage(tr("Admin: OFF"), 1500);
+
+    runFirstTimePasswordWizard();
+
     // Инициализация менеджеров
     m_database = &Database::getInstance();
     m_rentalManager = new RentalManager(this);
@@ -47,6 +36,18 @@ MainWindow::MainWindow(QWidget *parent)
         return;
     }
     
+    // Инициализация аудит-логгера на текущем соединении (default)
+    AuditLogger::instance().init(/*если есть имя соединения, передай его сюда*/);
+
+    // Провайдер "кто"
+    AuditLogger::instance().setActorProvider([this](){
+        return m_adminSession.isElevated() ? QStringLiteral("admin") : QStringLiteral("user");
+    });
+
+    // Запишем старт приложения
+    AuditLogger::instance().log("App started", QSysInfo::prettyProductName(),
+                                AuditSeverity::Info);
+
     // Загружаем данные в таблицы
     refreshCustomerTable();
     refreshEquipmentTable();
@@ -102,23 +103,23 @@ void MainWindow::setupMenuBar()
     // Меню Поиск
     QMenu *searchMenu = menuBar->addMenu("&Поиск");
     m_searchAction = searchMenu->addAction("&Поиск клиентов");
-    searchMenu->addAction("Поиск оборудования");
-    searchMenu->addAction("Поиск аренд");
+    m_searchEquipmentAction = searchMenu->addAction("Поиск оборудования");
+    m_searchRentalAction = searchMenu->addAction("Поиск аренд");
     
     // Меню Отчеты
     QMenu *reportsMenu = menuBar->addMenu("&Отчеты");
     m_reportsAction = reportsMenu->addAction("&Генерировать отчет");
-    reportsMenu->addAction("Отчет по арендам");
-    reportsMenu->addAction("Отчет по оборудованию");
-    reportsMenu->addAction("Финансовый отчет");
+    m_reportRentalsAction = reportsMenu->addAction("Отчет по арендам");
+    m_reportEquipmentAction = reportsMenu->addAction("Отчет по оборудованию");
+    m_reportFinanceAction = reportsMenu->addAction("Финансовый отчет");
     
     // Меню Настройки
     QMenu *settingsMenu = menuBar->addMenu("&Настройки");
     m_settingsAction = settingsMenu->addAction("&Параметры");
-    settingsMenu->addAction("Резервное копирование");
-    settingsMenu->addAction("Восстановление");
+    m_settingsBackupAction = settingsMenu->addAction("Резервное копирование");
+    m_settingsRestoreAction = settingsMenu->addAction("Восстановление");
     settingsMenu->addSeparator();
-    settingsMenu->addAction("Сменить пароль");
+    m_settingsChangePwdAction = settingsMenu->addAction("Сменить пароль");
     
     // Меню Справка
     QMenu *helpMenu = menuBar->addMenu("&Справка");
@@ -260,6 +261,222 @@ void MainWindow::createEquipmentTab()
     m_tabWidget->addTab(m_equipmentTab, "Оборудование");
 }
 
+void MainWindow::connectAdminSensitiveActions() {
+    
+}
+
+void MainWindow::onSearchRental()
+{
+    m_statusLabel->setText("Поиск аренд...");
+    const QString term = QInputDialog::getText(this, "Поиск аренд",
+                                               "Введите клиента, оборудование, статус или ID:");
+    if (term.isEmpty()) return;
+
+    const QString t = term.trimmed().toLower();
+    QList<Rental*> rentals = Rental::getAll();
+    QList<Rental*> filtered;
+    filtered.reserve(rentals.size());
+
+    for (Rental* r : rentals) {
+        const QString id = QString::number(r->getId());
+        const QString cust = r->getCustomer() ? r->getCustomer()->getName() : QString();
+        const QString eq   = r->getEquipment() ? r->getEquipment()->getName() : QString();
+        const QString st   = r->getStatusText();
+
+        if (id.contains(t, Qt::CaseInsensitive) ||
+            cust.toLower().contains(t) ||
+            eq.toLower().contains(t) ||
+            st.toLower().contains(t))
+        {
+            filtered.append(r);
+        }
+    }
+
+    m_tabWidget->setCurrentWidget(m_rentalTab);
+    displayRentals(filtered);
+    statusBar()->showMessage(QString("Найдено аренд: %1").arg(filtered.size()), 3000);
+}
+
+// --- Печать текущего отчёта из QTextEdit ---
+void MainWindow::onReportPrint()
+{
+    if (!m_reportsText) return;
+    QTextDocument doc;
+    doc.setHtml(m_reportsText->toHtml());
+
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setPageSize(QPageSize(QPageSize::A4));
+    QPrintDialog pd(&printer, this);
+    pd.setWindowTitle("Печать отчёта");
+    if (pd.exec() == QDialog::Accepted) {
+        doc.print(&printer);
+    }
+
+    AuditLogger::instance().log("Report printed", m_reportTypeCombo ? m_reportTypeCombo->currentText() : "");
+}
+
+// --- Экспорт текущего отчёта: PDF или HTML ---
+void MainWindow::onReportExport()
+{
+    if (!m_reportsText) return;
+
+    const QString suggestedBase =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) +
+        "/report_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmm");
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Экспорт отчёта", suggestedBase,
+        "PDF (*.pdf);;HTML (*.html)");
+
+    if (path.isEmpty()) return;
+
+    if (path.endsWith(".pdf", Qt::CaseInsensitive)) {
+        QTextDocument doc;
+        doc.setHtml(m_reportsText->toHtml());
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setOutputFormat(QPrinter::PdfFormat);
+        printer.setOutputFileName(path);
+        printer.setPageSize(QPageSize(QPageSize::A4));
+        doc.print(&printer);
+        QMessageBox::information(this, "Готово", "Отчёт сохранён в PDF.");
+    } else {
+        QFile f(path.endsWith(".html", Qt::CaseInsensitive) ? path : (path + ".html"));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            f.write(m_reportsText->toHtml().toUtf8());
+            f.close();
+            QMessageBox::information(this, "Готово", "Отчёт сохранён в HTML.");
+        } else {
+            QMessageBox::warning(this, "Ошибка", "Не удалось сохранить отчёт.");
+        }
+    }
+
+    AuditLogger::instance().log("Report exported", m_reportTypeCombo ? m_reportTypeCombo->currentText() : "");
+}
+
+// --- Меню «Настройки» → Резервное копирование ---
+void MainWindow::onSettingsBackup()
+{
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
+    const QString suggested =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) +
+        "/rental_backup_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".db";
+
+    const QString fileName = QFileDialog::getSaveFileName(
+        this, "Сохранить резервную копию", suggested,
+        "База данных (*.db);;Все файлы (*)");
+    if (fileName.isEmpty()) return;
+
+    if (m_database && m_database->backupDatabase(fileName)) {
+        QMessageBox::information(this, "Успех", "Резервная копия создана успешно!");
+        AuditLogger::instance().log("Backup created", fileName, AuditSeverity::Security);
+    } else {
+        QMessageBox::warning(this, "Ошибка", "Не удалось создать резервную копию.");
+        AuditLogger::instance().log("Backup failed", fileName, AuditSeverity::Error);
+    }
+}
+
+// --- Меню «Настройки» → Восстановление ---
+void MainWindow::onSettingsRestore()
+{
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
+    const QString fileName = QFileDialog::getOpenFileName(
+        this, "Выбрать файл для восстановления",
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        "База данных (*.db);;Все файлы (*)");
+    if (fileName.isEmpty()) return;
+
+    if (QMessageBox::question(this, "Подтверждение",
+         "Восстановление базы данных приведёт к потере текущих данных. Продолжить?",
+         QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
+
+    if (m_database && m_database->restoreDatabase(fileName)) {
+        // Обновить данные в UI
+        refreshCustomerTable();
+        refreshEquipmentTable();
+        refreshRentalTable();
+        QMessageBox::information(this, "Готово", "База данных успешно восстановлена.");
+        AuditLogger::instance().log("Database restored", fileName, AuditSeverity::Security);
+    } else {
+        QMessageBox::warning(this, "Ошибка", "Не удалось восстановить базу данных.");
+        AuditLogger::instance().log("Restore failed", fileName, AuditSeverity::Error);
+    }
+}
+
+// --- Меню «Настройки» → Сменить пароль ---
+void MainWindow::onChangeAdminPassword()
+{
+    // Только админ может менять
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    setAdminPassword();
+}
+
+void MainWindow::setupSecurityMenu() {
+    // Создаём/находим меню «Безопасность»
+    QMenu* sec = nullptr;
+    for (auto* m : menuBar()->findChildren<QMenu*>()) {
+        if (m->title() == tr("Безопасность")) { sec = m; break; }
+    }
+    if (!sec) sec = menuBar()->addMenu(tr("Безопасность"));
+
+    // Действие: Установить/Сменить админ-пароль
+    QAction* actSetPwd = new QAction(tr("Установить админ-пароль…"), this);
+    connect(actSetPwd, &QAction::triggered, this, &MainWindow::setAdminPassword);
+    sec->addAction(actSetPwd);
+
+    // (необязательно) шорткаты
+    actSetPwd->setShortcut(QKeySequence("Ctrl+Shift+P"));
+}
+
+void MainWindow::runFirstTimePasswordWizard() {
+    if (m_adminMgr.hasPassword()) return;
+
+    const auto btn = QMessageBox::question(
+        this, tr("Админ-пароль"),
+        tr("Админ-пароль ещё не установлен. Установить сейчас?"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+
+    if (btn == QMessageBox::Yes) {
+        setAdminPassword();
+    } else {
+        statusBar()->showMessage(tr("Админ-пароль не установлен"), 3000);
+    }
+}
+
+void MainWindow::setAdminPassword() {
+    bool ok1=false, ok2=false;
+    const QString p1 = QInputDialog::getText(this, tr("Новый админ-пароль"),
+                                             tr("Введите новый пароль (мин. 10 символов):"),
+                                             QLineEdit::Password, {}, &ok1);
+    if (!ok1) return;
+
+    const QString p2 = QInputDialog::getText(this, tr("Подтверждение пароля"),
+                                             tr("Повторите пароль:"),
+                                             QLineEdit::Password, {}, &ok2);
+    if (!ok2) return;
+
+    if (p1 != p2) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Пароли не совпадают."));
+        return;
+    }
+    if (p1.size() < 10) {
+        QMessageBox::warning(this, tr("Ошибка"),
+                             tr("Слишком короткий пароль. Минимум 10 символов."));
+        return;
+    }
+
+    if (m_adminMgr.setNewPassword(p1)) {
+        m_adminSession.clear(); // сбросить возможную старую сессию
+        statusBar()->showMessage(tr("Админ-пароль установлен"), 3000);
+        QMessageBox::information(this, tr("Готово"), tr("Админ-пароль успешно установлен."));
+        AuditLogger::instance().log("Admin password changed", "", AuditSeverity::Security);
+    } else {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось сохранить админ-пароль."));
+        AuditLogger::instance().log("Admin password change failed", "", AuditSeverity::Warning);
+    }
+}
+
 void MainWindow::createRentalTab()
 {
     m_rentalTab = new QWidget();
@@ -326,11 +543,11 @@ void MainWindow::createReportsTab()
     // Кнопки
     QHBoxLayout *buttonLayout = new QHBoxLayout();
     m_generateReportBtn = new QPushButton("Сгенерировать отчет");
-    QPushButton *printBtn = new QPushButton("Печать");
-    QPushButton *exportBtn = new QPushButton("Экспорт");
+    m_reportPrintBtn   = new QPushButton("Печать");
+    m_reportExportBtn  = new QPushButton("Экспорт");
     buttonLayout->addWidget(m_generateReportBtn);
-    buttonLayout->addWidget(printBtn);
-    buttonLayout->addWidget(exportBtn);
+    buttonLayout->addWidget(m_reportPrintBtn);
+    buttonLayout->addWidget(m_reportExportBtn);
     buttonLayout->addStretch();
     layout->addLayout(buttonLayout);
     
@@ -350,10 +567,33 @@ void MainWindow::setupConnections()
     connect(m_newEquipmentAction, &QAction::triggered, this, &MainWindow::onNewEquipment);
     connect(m_newRentalAction, &QAction::triggered, this, &MainWindow::onNewRental);
     connect(m_searchAction, &QAction::triggered, this, &MainWindow::onSearchCustomer);
+    connect(m_searchEquipmentAction, &QAction::triggered, this, &MainWindow::onSearchEquipment);
+    connect(m_searchRentalAction,    &QAction::triggered, this, &MainWindow::onSearchRental);
     connect(m_reportsAction, &QAction::triggered, this, &MainWindow::onReports);
+    connect(m_reportRentalsAction, &QAction::triggered, this, [this]{
+        m_tabWidget->setCurrentWidget(m_reportsTab);
+        m_reportTypeCombo->setCurrentText("Отчет по арендам");
+        onReports();
+    });
+    connect(m_reportEquipmentAction, &QAction::triggered, this, [this]{
+        m_tabWidget->setCurrentWidget(m_reportsTab);
+        m_reportTypeCombo->setCurrentText("Отчет по оборудованию");
+        onReports();
+    });
+    connect(m_reportFinanceAction, &QAction::triggered, this, [this]{
+        m_tabWidget->setCurrentWidget(m_reportsTab);
+        m_reportTypeCombo->setCurrentText("Финансовый отчет");
+        onReports();
+    });
     connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettings);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
     connect(m_exitAction, &QAction::triggered, this, &MainWindow::onExit);
+    connect(m_settingsBackupAction,  &QAction::triggered, this, &MainWindow::onSettingsBackup);
+    connect(m_settingsRestoreAction, &QAction::triggered, this, &MainWindow::onSettingsRestore);
+    connect(m_settingsChangePwdAction, &QAction::triggered, this, &MainWindow::onChangeAdminPassword);
+    // Вкладка «Отчёты»: печать и экспорт
+    connect(m_reportPrintBtn,  &QPushButton::clicked, this, &MainWindow::onReportPrint);
+    connect(m_reportExportBtn, &QPushButton::clicked, this, &MainWindow::onReportExport);
     
     // Соединения кнопок
     connect(m_addCustomerBtn, &QPushButton::clicked, this, &MainWindow::onNewCustomer);
@@ -442,8 +682,10 @@ void MainWindow::onNewCustomer()
         if (customer->save()) {
             refreshCustomerTable();
             statusBar()->showMessage("Клиент успешно создан", 3000);
+            AuditLogger::instance().log("Customer created", QString("id=%1 name=%2").arg(customer->getId()).arg(customer->getName()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось создать клиента");
+            AuditLogger::instance().log("Customer create failed", "", AuditSeverity::Error);
         }
         delete customer;
     }
@@ -459,8 +701,10 @@ void MainWindow::onNewEquipment()
         if (equipment->save()) {
             refreshEquipmentTable();
             statusBar()->showMessage("Оборудование успешно создано", 3000);
+            AuditLogger::instance().log("Equipment created", QString("id=%1 name=%2").arg(equipment->getId()).arg(equipment->getName()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось создать оборудование");
+            AuditLogger::instance().log("Equipment create failed", "", AuditSeverity::Error);
         }
         delete equipment;
     }
@@ -476,8 +720,15 @@ void MainWindow::onNewRental()
         if (rental->save()) {
             refreshRentalTable();
             statusBar()->showMessage("Аренда успешно создана", 3000);
+            AuditLogger::instance().log("Rental created",
+                QString("id=%1 cust=%2 eq=%3 qty=%4")
+                    .arg(rental->getId())
+                    .arg(rental->getCustomer()?rental->getCustomer()->getName():"")
+                    .arg(rental->getEquipment()?rental->getEquipment()->getName():"")
+                    .arg(rental->getQuantity()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось создать аренду");
+            AuditLogger::instance().log("Rental create failed", "", AuditSeverity::Error);
         }
         delete rental;
     }
@@ -701,6 +952,12 @@ void MainWindow::onReports()
     
     m_reportsText->setHtml(report);
     m_statusLabel->setText("Отчет сгенерирован");
+
+    AuditLogger::instance().log("Report generated",
+        QString("type=%1 period=%2..%3")
+            .arg(reportType)
+            .arg(startDate.toString("yyyy-MM-dd"))
+            .arg(endDate.toString("yyyy-MM-dd")));
 }
 
 void MainWindow::onSettings()
@@ -735,7 +992,9 @@ void MainWindow::onSettings()
     
     QPushButton* backupBtn = new QPushButton("Создать резервную копию", dbGroup);
     QPushButton* restoreBtn = new QPushButton("Восстановить из копии", dbGroup);
+    QPushButton* auditBtn = new QPushButton("Журнал событий… (только админ)", dbGroup);
     
+    dbLayout->addRow("", auditBtn);
     dbLayout->addRow("", backupBtn);
     dbLayout->addRow("", restoreBtn);
     
@@ -766,38 +1025,50 @@ void MainWindow::onSettings()
         statusBar()->showMessage("Настройки применены", 2000);
     });
     
-    connect(backupBtn, &QPushButton::clicked, [&]() {
-        QString fileName = QFileDialog::getSaveFileName(&settingsDialog, 
-            "Сохранить резервную копию", 
-            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/rental_backup.db",
-            "База данных (*.db);;Все файлы (*)");
-        
-        if (!fileName.isEmpty()) {
-            if (QFile::copy(m_database->getDatabasePath(), fileName)) {
-                QMessageBox::information(&settingsDialog, "Успех", "Резервная копия создана успешно!");
-            } else {
-                QMessageBox::warning(&settingsDialog, "Ошибка", "Не удалось создать резервную копию");
-            }
+    connect(auditBtn, &QPushButton::clicked, [&, this](){
+        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+        AuditLogger::instance().log("Open audit log", "", AuditSeverity::Security);
+        AuditLogDialog dlg(this);
+        dlg.exec();
+    });
+
+    connect(backupBtn, &QPushButton::clicked, [&, this]() {
+        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
+        const QString suggested = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                                + "/rental_backup_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".db";
+
+        const QString fileName = QFileDialog::getSaveFileName(&settingsDialog,
+            "Сохранить резервную копию", suggested, "База данных (*.db);;Все файлы (*)");
+        if (fileName.isEmpty()) return;
+
+        if (m_database->backupDatabase(fileName)) {
+            QMessageBox::information(&settingsDialog, "Успех", "Резервная копия создана успешно!");
+        } else {
+            QMessageBox::warning(&settingsDialog, "Ошибка", "Не удалось создать резервную копию.");
         }
     });
-    
-    connect(restoreBtn, &QPushButton::clicked, [&]() {
-        QString fileName = QFileDialog::getOpenFileName(&settingsDialog, 
-            "Выбрать файл для восстановления", 
+
+    connect(restoreBtn, &QPushButton::clicked, [&, this]() {
+        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
+        const QString fileName = QFileDialog::getOpenFileName(&settingsDialog,
+            "Выбрать файл для восстановления",
             QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
             "База данных (*.db);;Все файлы (*)");
-        
-        if (!fileName.isEmpty()) {
-            QMessageBox::StandardButton reply = QMessageBox::question(&settingsDialog, 
-                "Подтверждение", 
-                "Восстановление базы данных приведет к потере текущих данных. Продолжить?",
-                QMessageBox::Yes | QMessageBox::No);
-            
-            if (reply == QMessageBox::Yes) {
-                // Здесь должна быть логика восстановления
-                QMessageBox::information(&settingsDialog, "Информация", 
-                    "Функция восстановления будет реализована в следующей версии");
-            }
+        if (fileName.isEmpty()) return;
+
+        if (QMessageBox::question(&settingsDialog, "Подтверждение",
+            "Восстановление базы данных приведёт к потере текущих данных. Продолжить?",
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
+
+        if (m_database->restoreDatabase(fileName)) {
+            refreshCustomerTable();
+            refreshEquipmentTable();
+            refreshRentalTable();
+            QMessageBox::information(&settingsDialog, "Готово", "База данных успешно восстановлена.");
+        } else {
+            QMessageBox::warning(&settingsDialog, "Ошибка", "Не удалось восстановить базу данных.");
         }
     });
     
@@ -843,8 +1114,11 @@ void MainWindow::onEditCustomer()
         if (customer->update()) {
             refreshCustomerTable();
             statusBar()->showMessage("Клиент успешно обновлен", 3000);
+            AuditLogger::instance().log("Customer updated", QString("id=%1 name=%2").arg(customer->getId()).arg(customer->getName()));
+
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось обновить клиента");
+            AuditLogger::instance().log("Customer update failed", QString("id=%1").arg(customer->getId()), AuditSeverity::Error);
         }
     }
     delete customer;
@@ -852,6 +1126,8 @@ void MainWindow::onEditCustomer()
 
 void MainWindow::onEditEquipment()
 {
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
     if (m_selectedEquipmentId == -1) {
         QMessageBox::information(this, "Информация", "Выберите оборудование для редактирования");
         return;
@@ -868,8 +1144,10 @@ void MainWindow::onEditEquipment()
         if (equipment->update()) {
             refreshEquipmentTable();
             statusBar()->showMessage("Оборудование успешно обновлено", 3000);
+            AuditLogger::instance().log("Equipment updated", QString("id=%1 name=%2").arg(equipment->getId()).arg(equipment->getName()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось обновить оборудование");
+            AuditLogger::instance().log("Equipment update failed", QString("id=%1").arg(equipment->getId()), AuditSeverity::Error);
         }
     }
     delete equipment;
@@ -892,8 +1170,10 @@ void MainWindow::onDeleteCustomer()
             refreshCustomerTable();
             m_selectedCustomerId = -1;
             statusBar()->showMessage("Клиент успешно удален", 3000);
+            AuditLogger::instance().log("Customer deleted", QString("id=%1").arg(m_selectedCustomerId), AuditSeverity::Security);
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось удалить клиента");
+            AuditLogger::instance().log("Customer delete failed", QString("id=%1").arg(m_selectedCustomerId), AuditSeverity::Error);
         }
         delete customer;
     }
@@ -901,6 +1181,10 @@ void MainWindow::onDeleteCustomer()
 
 void MainWindow::onDeleteEquipment()
 {
+    
+
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
     if (m_selectedEquipmentId == -1) {
         QMessageBox::information(this, "Информация", "Выберите оборудование для удаления");
         return;
@@ -916,8 +1200,10 @@ void MainWindow::onDeleteEquipment()
             refreshEquipmentTable();
             m_selectedEquipmentId = -1;
             statusBar()->showMessage("Оборудование успешно удалено", 3000);
+            AuditLogger::instance().log("Equipment deleted", QString("id=%1").arg(m_selectedEquipmentId), AuditSeverity::Security);
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось удалить оборудование");
+            AuditLogger::instance().log("Equipment delete failed", QString("id=%1").arg(m_selectedEquipmentId), AuditSeverity::Error);
         }
         delete equipment;
     }
@@ -977,12 +1263,13 @@ void MainWindow::onCompleteRental()
     connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     
     if (dialog.exec() == QDialog::Accepted) {
-        if (rental->complete(damageCostSpin->value(), cleaningCostSpin->value(), 
-                           finalDepositSpin->value(), notesEdit->toPlainText())) {
+        if (rental->complete(damageCostSpin->value(), cleaningCostSpin->value(), finalDepositSpin->value(), notesEdit->toPlainText())) {
             refreshRentalTable();
             statusBar()->showMessage("Аренда успешно завершена", 3000);
+            AuditLogger::instance().log("Rental completed", QString("id=%1").arg(rental->getId()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось завершить аренду");
+            AuditLogger::instance().log("Rental complete failed", QString("id=%1").arg(rental->getId()), AuditSeverity::Error);
         }
     }
     delete rental;
@@ -1171,6 +1458,8 @@ void MainWindow::onPrintRental()
             doc.print(&printer);
         }
     }
+
+    AuditLogger::instance().log("Contract printed", QString("rental_id=%1").arg(m_selectedRentalId));
 
     delete rental;
 }

@@ -1,9 +1,26 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "AdminSession.h"
+#include "AdminPasswordManager.h"
+#include "database.h"
+#include "rentalmanager.h"
+#include "security.h"
+#include "customerdialog.h"
+#include "equipmentdialog.h"
+#include "rentaldialog.h"
+#include "AdminGuard.h"
+#include "AdminSession.h"
+#include "AdminPasswordManager.h"
+#include "AuditLogger.h"
+#include "AuditLogDialog.h"
 #include <QMainWindow>
+#include <QFileDialog>
+#include <QPrinter>
 #include <QTabWidget>
 #include <QVBoxLayout>
+#include <QPrintDialog>
+#include <QPageSize>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
@@ -15,10 +32,18 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QMessageBox>
+#include <QSettings>
+#include <QTimer>
+#include <QStyle>
+#include <QScreen>
+#include <QDir>
 #include <QStatusBar>
 #include <QMenuBar>
+#include <QMetaObject>
 #include <QToolBar>
 #include <QAction>
+#include <QTextDocument>
+#include <QDateTime>
 #include <QDialog>
 #include <QCalendarWidget>
 #include <QTextEdit>
@@ -81,6 +106,13 @@ private slots:
     void onCustomerDoubleClicked();
     void onEquipmentDoubleClicked();
     void onRentalDoubleClicked();
+    void onSearchRental();        // поиск аренд
+    void onReportPrint();         // печать текущего отчёта
+    void onReportExport();        // экспорт текущего отчёта (PDF/HTML)
+    void onSettingsBackup();      // бэкап из меню
+    void onSettingsRestore();     // восстановление из меню
+    void onChangeAdminPassword(); // смена админ-пароля из меню
+    
 
 private:
     void setupUI();
@@ -110,6 +142,15 @@ private:
     // Style methods
     void loadStyleSheet(const QString& theme);
     bool generateDocxFromTemplate(const QString& templatePath, const QMap<QString, QString>& values, QString& outputDocxPath);
+
+    // Admin security
+    AdminSession m_adminSession;
+    AdminPasswordManager m_adminMgr;
+    void connectAdminSensitiveActions();
+    void setupSecurityMenu();
+    void runFirstTimePasswordWizard();
+    void setAdminPassword();
+    void adminLogout();
 
     // UI Components
     QTabWidget *m_tabWidget;
@@ -156,6 +197,23 @@ private:
     QAction *m_settingsAction;
     QAction *m_aboutAction;
     QAction *m_exitAction;
+    // actions из меню Поиск
+    QAction* m_searchEquipmentAction = nullptr;
+    QAction* m_searchRentalAction = nullptr;
+
+    // actions из меню Отчёты
+    QAction* m_reportRentalsAction = nullptr;
+    QAction* m_reportEquipmentAction = nullptr;
+    QAction* m_reportFinanceAction = nullptr;
+
+    // actions из меню Настройки
+    QAction* m_settingsBackupAction = nullptr;
+    QAction* m_settingsRestoreAction = nullptr;
+    QAction* m_settingsChangePwdAction = nullptr;
+
+    // Кнопки вкладки отчётов (для печати/экспорта)
+    QPushButton* m_reportPrintBtn = nullptr;
+    QPushButton* m_reportExportBtn = nullptr;
     
     // Managers
     RentalManager *m_rentalManager;
