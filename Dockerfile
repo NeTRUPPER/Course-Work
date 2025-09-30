@@ -91,10 +91,10 @@ WORKDIR /app
 ENV QT_QPA_PLATFORM=xcb
 ENV QT_PLUGIN_PATH=/app/sqldrivers
 ENV QT_DEBUG_PLUGINS=0
+ENV XDG_DATA_HOME=/app/data
 
 # Точка входа
 ENTRYPOINT ["./TouristRentalApp"]
 
-# Монтирование данных
+# Папка с БД и сохранением данных
 VOLUME ["/app/data"]
-
