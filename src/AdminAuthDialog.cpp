@@ -8,9 +8,6 @@ AdminAuthDialog::AdminAuthDialog(QWidget* parent)
 {
     ui->setupUi(this);
     setWindowTitle(tr("Подтверждение прав"));
-
-    // На случай, если в ui_ уже есть лямбда — дубль не критичен,
-    // но этот слот точно удовлетворит moc.
     connect(ui->checkBoxShow, &QCheckBox::toggled,
             this, &AdminAuthDialog::onShowToggled);
 }

@@ -1,8 +1,3 @@
-// ------------------------------------------------------------
-// Файл: mainwindow.cpp
-// Назначение: Реализация главного окна приложения, вкладок,
-// меню, тулбара, обработчиков событий и печати договора.
-// ------------------------------------------------------------
 #include "mainwindow.h"
 
 MainWindow::MainWindow(QWidget *parent)
@@ -297,7 +292,7 @@ void MainWindow::onSearchRental()
     statusBar()->showMessage(QString("Найдено аренд: %1").arg(filtered.size()), 3000);
 }
 
-// --- Печать текущего отчёта из QTextEdit ---
+// Печать текущего отчёта из QTextEdit
 void MainWindow::onReportPrint()
 {
     if (!m_reportsText) return;
@@ -315,7 +310,7 @@ void MainWindow::onReportPrint()
     AuditLogger::instance().log("Report printed", m_reportTypeCombo ? m_reportTypeCombo->currentText() : "");
 }
 
-// --- Экспорт текущего отчёта: PDF или HTML ---
+// Экспорт текущего отчёта: PDF или HTML
 void MainWindow::onReportExport()
 {
     if (!m_reportsText) return;
@@ -353,7 +348,7 @@ void MainWindow::onReportExport()
     AuditLogger::instance().log("Report exported", m_reportTypeCombo ? m_reportTypeCombo->currentText() : "");
 }
 
-// --- Меню «Настройки» → Резервное копирование ---
+// Меню «Настройки» Резервное копирование
 void MainWindow::onSettingsBackup()
 {
     if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
@@ -376,7 +371,7 @@ void MainWindow::onSettingsBackup()
     }
 }
 
-// --- Меню «Настройки» → Восстановление ---
+// Меню «Настройки» Восстановление 
 void MainWindow::onSettingsRestore()
 {
     if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
@@ -404,7 +399,7 @@ void MainWindow::onSettingsRestore()
     }
 }
 
-// --- Меню «Настройки» → Сменить пароль ---
+// Меню «Настройки» Сменить пароль
 void MainWindow::onChangeAdminPassword()
 {
     // Только админ может менять
@@ -962,7 +957,7 @@ void MainWindow::onReports()
 
 void MainWindow::onSettings()
 {
-    m_statusLabel->setText("Открытие настроек...");
+    m_statusLabel->setText("Открытие настроек");
     
     // Улучшенный диалог настроек
     QDialog settingsDialog(this);
@@ -992,7 +987,7 @@ void MainWindow::onSettings()
     
     QPushButton* backupBtn = new QPushButton("Создать резервную копию", dbGroup);
     QPushButton* restoreBtn = new QPushButton("Восстановить из копии", dbGroup);
-    QPushButton* auditBtn = new QPushButton("Журнал событий… (только админ)", dbGroup);
+    QPushButton* auditBtn = new QPushButton("Журнал событий", dbGroup);
     
     dbLayout->addRow("", auditBtn);
     dbLayout->addRow("", backupBtn);
@@ -1084,7 +1079,7 @@ void MainWindow::onSettings()
 void MainWindow::onAbout()
 {
     QMessageBox::about(this, "О программе", 
-                      "Система проката туристического оборудования\n"
+                      "Система проката оборудования\n"
                       "Версия 1.0.0\n\n"
                       "Разработано для управления прокатом оборудования\n"
                       "с защищенным хранением данных.");

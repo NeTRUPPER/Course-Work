@@ -1,8 +1,3 @@
-// ------------------------------------------------------------
-// Файл: main.cpp
-// Назначение: Точка входа в приложение TouristRentalApp.
-// Инициализирует Qt, настраивает окно и запускает цикл событий.
-// ------------------------------------------------------------
 #include <QApplication>
 #include <QStyleFactory>
 #include <QDir>
@@ -21,9 +16,9 @@ int main(int argc, char *argv[])
     app.setStyle(QStyleFactory::create("Fusion"));
     
     // Настройка информации о приложении
-    app.setApplicationName("Tourist Rental System");
+    app.setApplicationName("Rental System");
     app.setApplicationVersion("1.0.0");
-    app.setOrganizationName("Tourist Rental");
+    app.setOrganizationName("Rental");
     
     // Создаем директорию для данных приложения
     QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);

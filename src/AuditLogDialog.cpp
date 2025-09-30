@@ -1,6 +1,5 @@
 #include "AuditLogDialog.h"
 
-
 AuditLogDialog::AuditLogDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Журнал событий (только для администратора)"));
     setModal(true);
