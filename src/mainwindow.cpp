@@ -1,4 +1,7 @@
 #include "mainwindow.h"
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QStringConverter>
+#endif
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -92,6 +95,8 @@ void MainWindow::setupMenuBar()
     m_newCustomerAction = fileMenu->addAction("&Новый клиент");
     m_newEquipmentAction = fileMenu->addAction("&Новое оборудование");
     m_newRentalAction = fileMenu->addAction("&Новая аренда");
+    fileMenu->addSeparator();
+    m_importEquipmentCsvAction = fileMenu->addAction("Импорт оборудования (CSV)…");
     fileMenu->addSeparator();
     m_exitAction = fileMenu->addAction("&Выход");
     
@@ -407,6 +412,155 @@ void MainWindow::onChangeAdminPassword()
     setAdminPassword();
 }
 
+void MainWindow::onImportEquipmentCsv()
+{
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+
+    const QString fileName = QFileDialog::getOpenFileName(
+        this,
+        tr("Выбрать CSV-файл (экспорт из Excel)"),
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        tr("CSV файлы (*.csv);;Все файлы (*)"));
+    if (fileName.isEmpty()) return;
+
+    QFile f(fileName);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось открыть файл."));
+        return;
+    }
+
+    QTextStream in(&f);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    in.setEncoding(QStringConverter::Utf8);
+#endif
+
+    auto detectDelimiter = [](const QString& line) -> QChar {
+        // Считаем разделители вне кавычек
+        int semi = 0, comma = 0; bool inQuotes = false;
+        for (QChar ch : line) {
+            if (ch == '"') inQuotes = !inQuotes;
+            else if (!inQuotes && ch == ';') ++semi;
+            else if (!inQuotes && ch == ',') ++comma;
+        }
+        return semi >= comma ? ';' : ',';
+    };
+
+    auto splitCsv = [](const QString& line, QChar delim) -> QStringList {
+        QStringList out; QString cur; bool inQuotes = false;
+        for (int i = 0; i < line.size(); ++i) {
+            const QChar ch = line.at(i);
+            if (ch == '"') {
+                if (inQuotes && i + 1 < line.size() && line.at(i + 1) == '"') {
+                    cur += '"'; ++i; // escaped quote
+                } else {
+                    inQuotes = !inQuotes;
+                }
+            } else if (!inQuotes && ch == delim) {
+                out << cur; cur.clear();
+            } else {
+                cur += ch;
+            }
+        }
+        out << cur;
+        return out;
+    };
+
+    auto normalize = [](QString s) -> QString {
+        if (!s.isEmpty() && s.at(0).unicode() == 0xFEFF) s.remove(0, 1); // BOM
+        s = s.trimmed();
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            s = s.mid(1, s.size() - 2);
+        }
+        return s.trimmed();
+    };
+
+    // Прочитаем заголовок и сопоставим колонки
+    if (in.atEnd()) { QMessageBox::warning(this, tr("Ошибка"), tr("Файл пуст.")); return; }
+    const QString headerLine = in.readLine();
+    const QChar delim = detectDelimiter(headerLine);
+    QStringList headers = splitCsv(headerLine, delim);
+    for (QString& h : headers) h = normalize(h).toLower();
+
+    auto findCol = [&](std::initializer_list<QString> names) -> int {
+        int idx = -1; int i = 0;
+        for (const QString& h : headers) {
+            const QString& hh = h;
+            for (const QString& n : names) {
+                if (hh == n) { idx = i; break; }
+            }
+            if (idx != -1) break;
+            ++i;
+        }
+        return idx;
+    };
+
+    const int colName      = findCol({"название","наименование","имя","name","item","equipment"});
+    const int colCategory  = findCol({"категория","category"});
+    const int colPrice     = findCol({"цена","стоимость","price","cost","price_per_day","price/day"});
+    const int colDeposit   = findCol({"залог","deposit","collateral"});
+    const int colAddPrice  = findCol({
+        "стоимость вторых суток","вторые сутки","2-е сутки","цена 2+ день",
+        "доп. сутки","дополнительные сутки","additional_day_price",
+        "additional price","extra day price","price_additional","price 2nd day"
+    });
+    const int colQuantity  = findCol({"количество","qty","quantity","count"});
+    const int colDesc      = findCol({"описание","description","notes"});
+
+    if (colName == -1 || colCategory == -1 || colPrice == -1) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не найдены обязательные колонки: название, категория, цена..."));
+        return;
+    }
+
+    int imported = 0, skipped = 0, lineNo = 1;
+    while (!in.atEnd()) {
+        const QString line = in.readLine();
+        ++lineNo;
+        if (line.trimmed().isEmpty()) continue;
+        const QStringList colsRaw = splitCsv(line, delim);
+        QStringList cols; cols.reserve(colsRaw.size());
+        for (const QString& c : colsRaw) cols << normalize(c);
+        auto at = [&](int idx) -> QString { return (idx >= 0 && idx < cols.size()) ? cols[idx] : QString(); };
+
+        const QString name = at(colName);
+        const QString category = at(colCategory);
+        const double price = at(colPrice).replace(',', '.').toDouble();
+        const double deposit = colDeposit >= 0 ? at(colDeposit).replace(',', '.').toDouble() : 0.0;
+        const double addPrice = colAddPrice >= 0 ? at(colAddPrice).replace(',', '.').toDouble() : 0.0;
+        const int quantity = colQuantity >= 0 ? at(colQuantity).toInt() : 1;
+        const QString desc = at(colDesc);
+
+        if (name.trimmed().isEmpty() || category.trimmed().isEmpty() || price <= 0.0) {
+            ++skipped; continue;
+        }
+
+        Equipment eq;
+        eq.setName(name);
+        eq.setCategory(category);
+        eq.setPrice(price);
+        eq.setDeposit(deposit);
+        if (addPrice > 0.0) {
+            eq.setAdditionalDayPrice(addPrice);
+        }
+        eq.setQuantity(quantity > 0 ? quantity : 1);
+        eq.setAvailableQuantity(eq.getQuantity());
+        eq.setDescription(desc);
+
+        if (eq.save()) {
+            ++imported;
+        } else {
+            ++skipped;
+        }
+    }
+    f.close();
+
+    refreshEquipmentTable();
+    QMessageBox::information(this, tr("Импорт завершён"),
+        tr("Импортировано: %1, пропущено: %2").arg(imported).arg(skipped));
+
+    AuditLogger::instance().log("Equipment CSV imported",
+                                QString("ok=%1 skip=%2 file=%3").arg(imported).arg(skipped).arg(QFileInfo(fileName).fileName()));
+}
+
 void MainWindow::setupSecurityMenu() {
     // Создаём/находим меню «Безопасность»
     QMenu* sec = nullptr;
@@ -586,6 +740,9 @@ void MainWindow::setupConnections()
     connect(m_settingsBackupAction,  &QAction::triggered, this, &MainWindow::onSettingsBackup);
     connect(m_settingsRestoreAction, &QAction::triggered, this, &MainWindow::onSettingsRestore);
     connect(m_settingsChangePwdAction, &QAction::triggered, this, &MainWindow::onChangeAdminPassword);
+    if (m_importEquipmentCsvAction) {
+        connect(m_importEquipmentCsvAction, &QAction::triggered, this, &MainWindow::onImportEquipmentCsv);
+    }
     // Вкладка «Отчёты»: печать и экспорт
     connect(m_reportPrintBtn,  &QPushButton::clicked, this, &MainWindow::onReportPrint);
     connect(m_reportExportBtn, &QPushButton::clicked, this, &MainWindow::onReportExport);

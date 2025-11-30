@@ -112,6 +112,7 @@ private slots:
     void onSettingsBackup();      // бэкап из меню
     void onSettingsRestore();     // восстановление из меню
     void onChangeAdminPassword(); // смена админ-пароля из меню
+    void onImportEquipmentCsv();  // импорт оборудования из CSV
     
 
 private:
@@ -200,6 +201,7 @@ private:
     // actions из меню Поиск
     QAction* m_searchEquipmentAction = nullptr;
     QAction* m_searchRentalAction = nullptr;
+    QAction* m_importEquipmentCsvAction = nullptr; // импорт CSV
 
     // actions из меню Отчёты
     QAction* m_reportRentalsAction = nullptr;
