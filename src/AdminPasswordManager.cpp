@@ -3,6 +3,10 @@
 #include <QRandomGenerator>
 #include <QByteArray>
 #include <QSettings>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 
 static QByteArray stretch(const QByteArray& input, const QByteArray& salt, int iterations) {
     // Простое «растяжение»: H = SHA256(salt || pwd), затем итерации H = SHA256(H || salt)
@@ -37,15 +41,28 @@ AdminPasswordManager::AdminPasswordManager(QObject* p) : QObject(p) {}
 
 QString AdminPasswordManager::loadRecord() const {
     if (!m_cache.isEmpty()) return m_cache;
-    QSettings s; // org/app задайте в main()
-    const QString rec = s.value("security/admin_password_record").toString();
+
+    QSettings s = makeSecureSettings();
+    QString rec = s.value("admin_password_record").toString();
+
+    // миграция из старого места (если есть)
+    if (rec.isEmpty()) {
+        QSettings legacy;
+        rec = legacy.value("security/admin_password_record").toString();
+        if (!rec.isEmpty()) {
+            s.setValue("admin_password_record", rec);
+            ensureSecurePermissions(s.fileName());
+        }
+    }
+
     const_cast<AdminPasswordManager*>(this)->m_cache = rec;
     return rec;
 }
 
 void AdminPasswordManager::saveRecord(const QString& record) const {
-    QSettings s;
-    s.setValue("security/admin_password_record", record);
+    QSettings s = makeSecureSettings();
+    s.setValue("admin_password_record", record);
+    ensureSecurePermissions(s.fileName());
     const_cast<AdminPasswordManager*>(this)->m_cache = record;
 }
 
@@ -90,4 +107,26 @@ bool AdminPasswordManager::setStoredRecord(const QString& r) {
     if (!parseRecord(r, it, salt, hash)) return false;
     saveRecord(r);
     return true;
+}
+
+QSettings AdminPasswordManager::makeSecureSettings()
+{
+    const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/secure";
+    QDir().mkpath(baseDir);
+    ensureSecurePermissions(baseDir);
+    const QString path = baseDir + "/credentials.ini";
+    return QSettings(path, QSettings::IniFormat);
+}
+
+void AdminPasswordManager::ensureSecurePermissions(const QString& path)
+{
+    QFileInfo info(path);
+    if (!info.exists()) return;
+
+    QFile f(path);
+    if (info.isDir()) {
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    } else {
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+    }
 }

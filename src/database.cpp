@@ -1,4 +1,5 @@
 #include "database.h"
+#include <cstring>
 
 Database* Database::m_instance = nullptr;
 
@@ -7,6 +8,7 @@ Database::Database(QObject *parent)
     , m_isOpen(false)
 {
     m_db = QSqlDatabase::addDatabase("QSQLITE");
+    m_encryptionKey.clear();
 }
 
 Database::~Database()
@@ -43,8 +45,8 @@ void Database::initialize(const QString& dbPath)
 
 bool Database::setupEncryption()
 {
-    // Шифрование БД отключено. Используется только аутентификация приложения.
-    return true;
+    // Пока что настраиваем ключ при открытии БД (openDatabase).
+    return true; // место для будущих проверок совместимости с SQLCipher/SEE
 }
 
 bool Database::openDatabase(const QString& password)
@@ -63,6 +65,10 @@ bool Database::openDatabase(const QString& password)
         qDebug() << "Ошибка открытия базы данных:" << m_db.lastError().text();
         return false;
     }
+
+    // Попытка применить ключ шифрования, если драйвер поддерживает SQLCipher/SEE.
+    m_encryptionKey = deriveDbKey(pw);
+    applyEncryptionKey(m_encryptionKey);
     
     // Гарантируем наличие таблиц (идемпотентно)
     if (!createTables()) {
@@ -88,6 +94,81 @@ bool Database::isOpen() const
     return m_isOpen;
 }
 
+QByteArray Database::loadOrCreateDbSalt()
+{
+    const QString secureDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/secure";
+    QDir().mkpath(secureDir);
+
+    const QString secureFile = secureDir + "/secure.ini";
+    QSettings secure(secureFile, QSettings::IniFormat);
+
+    auto ensurePerms = [](const QString& path) {
+        QFile f(path);
+        if (f.exists()) {
+            f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+        }
+    };
+
+    // 1) Пробуем прочитать соль из защищенного файла
+    QByteArray salt = QByteArray::fromBase64(secure.value("security/db_salt").toByteArray());
+
+    // 2) Миграция из старого расположения, если нужно
+    if (salt.isEmpty()) {
+        QSettings legacy;
+        salt = QByteArray::fromBase64(legacy.value("security/db_salt").toByteArray());
+        if (!salt.isEmpty()) {
+            secure.setValue("security/db_salt", salt.toBase64());
+            ensurePerms(secureFile);
+        }
+    }
+
+    // 3) Если соли нигде нет — генерируем новую и сохраняем в защищённое место
+    if (salt.isEmpty()) {
+        salt.resize(16);
+        auto *rng = QRandomGenerator::system();
+        for (int i = 0; i < salt.size(); i += 4) {
+            quint32 r = rng->generate();
+            const int chunk = qMin(4, salt.size() - i);
+            std::memcpy(salt.data() + i, &r, chunk);
+        }
+        secure.setValue("security/db_salt", salt.toBase64());
+        ensurePerms(secureFile);
+    }
+
+    return salt;
+}
+
+QByteArray Database::deriveDbKey(const QString& password)
+{
+    // 200k итераций PBKDF2-HMAC-SHA256 через Security::deriveKeyFromPassword
+    QByteArray salt = loadOrCreateDbSalt();
+    return Security::deriveKeyFromPassword(password, salt, 200000);
+}
+
+bool Database::applyEncryptionKey(const QByteArray& key)
+{
+    // Применяем ключ только если драйвер поддерживает PRAGMA key (SQLCipher/SEE).
+    if (key.isEmpty()) return false;
+
+    const QString driver = m_db.driverName().toLower();
+    if (!driver.contains("sqlite")) return false;
+
+    QString hex = QString::fromLatin1(key.toHex());
+    QSqlQuery q(m_db);
+    // SQLCipher: PRAGMA key="x'<hex>'";
+    if (!q.exec(QStringLiteral("PRAGMA key = \"x'%1'\";").arg(hex))) {
+        qDebug() << "PRAGMA key failed, encryption may be unsupported:" << q.lastError().text();
+        return false;
+    }
+    QSqlQuery check(m_db);
+    if (check.exec("PRAGMA cipher_version;") && check.next()) {
+        qDebug() << "SQLCipher cipher_version:" << check.value(0).toString();
+        return true;
+    }
+    // Для SQLite SEE: PRAGMA cipher_store_pass = '...'; может отличаться; пока только лог.
+    qDebug() << "Шифрование не подтверждено: драйвер может не поддерживать SQLCipher/SEE";
+    return false;
+}
 bool Database::createTables()
 {
     return createCustomersTable() &&
@@ -102,6 +183,9 @@ bool Database::createCustomersTable()
     QString sql = "CREATE TABLE IF NOT EXISTS customers ("
                   "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                   "name TEXT NOT NULL,"
+                  "last_name TEXT,"
+                  "first_name TEXT,"
+                  "patronymic TEXT,"
                   "phone TEXT,"
                   "email TEXT,"
                   "passport TEXT,"
@@ -120,14 +204,33 @@ bool Database::createCustomersTable()
     QSqlQuery pragma(m_db);
     if (pragma.exec("PRAGMA table_info(customers)")) {
         bool hasPassportIssue = false;
+        bool hasLastName = false;
+        bool hasFirstName = false;
+        bool hasPatronymic = false;
         while (pragma.next()) {
             if (pragma.value(1).toString() == "passport_issue_date") {
                 hasPassportIssue = true;
             }
+            const QString col = pragma.value(1).toString();
+            if (col == "last_name") hasLastName = true;
+            if (col == "first_name") hasFirstName = true;
+            if (col == "patronymic") hasPatronymic = true;
         }
         if (!hasPassportIssue) {
             QSqlQuery alter(m_db);
             alter.exec("ALTER TABLE customers ADD COLUMN passport_issue_date DATE");
+        }
+        if (!hasLastName) {
+            QSqlQuery alter(m_db);
+            alter.exec("ALTER TABLE customers ADD COLUMN last_name TEXT");
+        }
+        if (!hasFirstName) {
+            QSqlQuery alter(m_db);
+            alter.exec("ALTER TABLE customers ADD COLUMN first_name TEXT");
+        }
+        if (!hasPatronymic) {
+            QSqlQuery alter(m_db);
+            alter.exec("ALTER TABLE customers ADD COLUMN patronymic TEXT");
         }
     }
     return true;
@@ -221,19 +324,35 @@ bool Database::createSettingsTable()
     return true;
 }
 
+// --- helpers for encrypting PII ---
+static QString encField(const QString& plain) {
+    if (plain.isEmpty()) return plain;
+    return Security::encryptString(plain);
+}
+
+static QString encDate(const QDate& date) {
+    if (!date.isValid()) return QString();
+    return encField(date.toString(Qt::ISODate));
+}
+
 // Customer operations
-bool Database::addCustomer(const QString& name, const QString& phone, const QString& email,
+bool Database::addCustomer(const QString& lastName, const QString& firstName, const QString& middleName,
+                          const QString& fullName,
+                          const QString& phone, const QString& email,
                           const QString& passport, const QString& address, const QDate& passportIssueDate)
 {
     QSqlQuery query(m_db);
-    query.prepare("INSERT INTO customers (name, phone, email, passport, address, passport_issue_date) "
-                  "VALUES (?, ?, ?, ?, ?, ?)");
-    query.addBindValue(name);
-    query.addBindValue(phone);
-    query.addBindValue(email);
-    query.addBindValue(passport);
-    query.addBindValue(address);
-    if (passportIssueDate.isValid()) query.addBindValue(passportIssueDate); else query.addBindValue(QVariant());
+    query.prepare("INSERT INTO customers (name, last_name, first_name, patronymic, phone, email, passport, address, passport_issue_date) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    query.addBindValue(encField(fullName));
+    query.addBindValue(encField(lastName));
+    query.addBindValue(encField(firstName));
+    query.addBindValue(encField(middleName));
+    query.addBindValue(encField(phone));
+    query.addBindValue(encField(email));
+    query.addBindValue(encField(passport));
+    query.addBindValue(encField(address));
+    query.addBindValue(encDate(passportIssueDate));
 
     if (!query.exec()) {
         qDebug() << "Ошибка добавления клиента:" << query.lastError().text()
@@ -245,18 +364,23 @@ bool Database::addCustomer(const QString& name, const QString& phone, const QStr
     return true;
 }
 
-bool Database::updateCustomer(int id, const QString& name, const QString& phone,
+bool Database::updateCustomer(int id, const QString& lastName, const QString& firstName, const QString& middleName,
+                             const QString& fullName,
+                             const QString& phone,
                              const QString& email, const QString& passport, const QString& address, const QDate& passportIssueDate)
 {
     QSqlQuery query(m_db);
-    query.prepare("UPDATE customers SET name = ?, phone = ?, email = ?, passport = ?, "
+    query.prepare("UPDATE customers SET name = ?, last_name = ?, first_name = ?, patronymic = ?, phone = ?, email = ?, passport = ?, "
                   "address = ?, passport_issue_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-    query.addBindValue(name);
-    query.addBindValue(phone);
-    query.addBindValue(email);
-    query.addBindValue(passport);
-    query.addBindValue(address);
-    if (passportIssueDate.isValid()) query.addBindValue(passportIssueDate); else query.addBindValue(QVariant());
+    query.addBindValue(encField(fullName));
+    query.addBindValue(encField(lastName));
+    query.addBindValue(encField(firstName));
+    query.addBindValue(encField(middleName));
+    query.addBindValue(encField(phone));
+    query.addBindValue(encField(email));
+    query.addBindValue(encField(passport));
+    query.addBindValue(encField(address));
+    query.addBindValue(encDate(passportIssueDate));
     query.addBindValue(id);
     
     if (!query.exec()) {
@@ -284,7 +408,7 @@ bool Database::deleteCustomer(int id)
 QSqlQuery Database::getCustomers()
 {
     QSqlQuery query(m_db);
-    query.exec("SELECT * FROM customers ORDER BY name");
+    query.exec("SELECT * FROM customers ORDER BY last_name, first_name, patronymic");
     return query;
 }
 
@@ -300,14 +424,8 @@ QSqlQuery Database::getCustomerById(int id)
 QSqlQuery Database::searchCustomers(const QString& searchTerm)
 {
     QSqlQuery query(m_db);
-    query.prepare("SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? OR email LIKE ? "
-                  "OR passport LIKE ? ORDER BY name");
-    QString pattern = "%" + searchTerm + "%";
-    query.addBindValue(pattern);
-    query.addBindValue(pattern);
-    query.addBindValue(pattern);
-    query.addBindValue(pattern);
-    query.exec();
+    // Для зашифрованных полей поиск делаем на стороне клиента; здесь возвращаем всё
+    query.exec("SELECT * FROM customers ORDER BY last_name, first_name, patronymic");
     return query;
 }
 
@@ -337,17 +455,19 @@ bool Database::addEquipment(const QString& name, const QString& category, double
 }
 
 bool Database::updateEquipment(int id, const QString& name, const QString& category,
-                              double price, double deposit, int quantity, const QString& description, double additionalPrice)
+                              double price, double deposit, int quantity, int availableQuantity,
+                              const QString& description, double additionalPrice)
 {
     QSqlQuery query(m_db);
     query.prepare("UPDATE equipment SET name = ?, category = ?, price = ?, additional_day_price = ?, deposit = ?, "
-                  "quantity = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                  "quantity = ?, available_quantity = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
     query.addBindValue(name);
     query.addBindValue(category);
     query.addBindValue(price);
     query.addBindValue(additionalPrice);
     query.addBindValue(deposit);
     query.addBindValue(quantity);
+    query.addBindValue(availableQuantity);
     query.addBindValue(description);
     query.addBindValue(id);
     

@@ -33,9 +33,17 @@ void CustomerDialog::setupUI()
     // Форма
     QFormLayout* formLayout = new QFormLayout();
     
-    m_nameEdit = new QLineEdit(this);
-    m_nameEdit->setPlaceholderText("Введите имя клиента");
-    formLayout->addRow("Имя:", m_nameEdit);
+    m_lastNameEdit = new QLineEdit(this);
+    m_lastNameEdit->setPlaceholderText("Фамилия");
+    formLayout->addRow("Фамилия:", m_lastNameEdit);
+
+    m_firstNameEdit = new QLineEdit(this);
+    m_firstNameEdit->setPlaceholderText("Имя");
+    formLayout->addRow("Имя:", m_firstNameEdit);
+
+    m_middleNameEdit = new QLineEdit(this);
+    m_middleNameEdit->setPlaceholderText("Отчество");
+    formLayout->addRow("Отчество:", m_middleNameEdit);
     
     m_phoneEdit = new QLineEdit(this);
     m_phoneEdit->setPlaceholderText("+7 (XXX) XXX-XX-XX");
@@ -73,7 +81,9 @@ void CustomerDialog::setupUI()
     connect(m_buttonBox, &QDialogButtonBox::accepted, this, &CustomerDialog::accept);
     connect(m_buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
     
-    connect(m_nameEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
+    connect(m_lastNameEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
+    connect(m_firstNameEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
+    connect(m_middleNameEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
     connect(m_phoneEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
     connect(m_emailEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
     connect(m_passportEdit, &QLineEdit::textChanged, this, &CustomerDialog::validateInput);
@@ -87,7 +97,9 @@ void CustomerDialog::loadCustomerData()
 {
     if (!m_customer) return;
     
-    m_nameEdit->setText(m_customer->getName());
+    m_lastNameEdit->setText(m_customer->getLastName());
+    m_firstNameEdit->setText(m_customer->getFirstName());
+    m_middleNameEdit->setText(m_customer->getMiddleName());
     m_phoneEdit->setText(m_customer->getPhone());
     m_emailEdit->setText(m_customer->getEmail());
     m_passportEdit->setText(m_customer->getPassport());
@@ -98,7 +110,7 @@ void CustomerDialog::loadCustomerData()
 
 void CustomerDialog::validateInput()
 {
-    bool isValid = !m_nameEdit->text().trimmed().isEmpty();
+    bool isValid = !m_lastNameEdit->text().trimmed().isEmpty() && !m_firstNameEdit->text().trimmed().isEmpty();
     
     if (isValid) {
         m_statusLabel->setText("✓ Форма заполнена корректно");
@@ -116,7 +128,9 @@ void CustomerDialog::accept()
     if (!m_customer) return;
     
     // Обновляем данные клиента
-    m_customer->setName(m_nameEdit->text().trimmed());
+    m_customer->setLastName(m_lastNameEdit->text().trimmed());
+    m_customer->setFirstName(m_firstNameEdit->text().trimmed());
+    m_customer->setMiddleName(m_middleNameEdit->text().trimmed());
     m_customer->setPhone(m_phoneEdit->text().trimmed());
     m_customer->setEmail(m_emailEdit->text().trimmed());
     m_customer->setPassport(m_passportEdit->text().trimmed());

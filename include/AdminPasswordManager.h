@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QSettings>
 
 class AdminPasswordManager : public QObject {
     Q_OBJECT
@@ -21,6 +22,8 @@ public:
 private:
     QString loadRecord() const;
     void saveRecord(const QString& record) const;
+    static QSettings makeSecureSettings();
+    static void ensureSecurePermissions(const QString& path);
 
     // Выберите реализацию хранения: QSettings или БД
     QString m_cache; // lazy cache, чтобы не читать каждый раз

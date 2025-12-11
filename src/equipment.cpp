@@ -127,7 +127,7 @@ bool Equipment::save()
         }
     } else {
         // Обновление существующего оборудования
-        if (db.updateEquipment(m_id, m_name, m_category, m_price, m_deposit, m_quantity, m_description, m_additionalDayPrice)) {
+        if (db.updateEquipment(m_id, m_name, m_category, m_price, m_deposit, m_quantity, m_availableQuantity, m_description, m_additionalDayPrice)) {
             m_updatedAt = QDateTime::currentDateTime();
             return true;
         }

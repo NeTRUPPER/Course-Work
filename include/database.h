@@ -20,6 +20,8 @@
 #include <QMetaType>
 #include <QVariant>
 #include <QFileInfo>
+#include <QRandomGenerator>
+#include <QSettings>
 
 class Database : public QObject
 {
@@ -34,9 +36,13 @@ public:
     bool isOpen() const;
     
     // Customer operations
-    bool addCustomer(const QString& name, const QString& phone, const QString& email, 
+    bool addCustomer(const QString& lastName, const QString& firstName, const QString& middleName,
+                    const QString& fullName,
+                    const QString& phone, const QString& email, 
                     const QString& passport, const QString& address, const QDate& passportIssueDate = QDate());
-    bool updateCustomer(int id, const QString& name, const QString& phone, 
+    bool updateCustomer(int id, const QString& lastName, const QString& firstName, const QString& middleName,
+                       const QString& fullName,
+                       const QString& phone, 
                        const QString& email, const QString& passport, const QString& address, const QDate& passportIssueDate = QDate());
     bool deleteCustomer(int id);
     QSqlQuery getCustomers();
@@ -47,7 +53,8 @@ public:
     bool addEquipment(const QString& name, const QString& category, double price, 
                      double deposit, int quantity, const QString& description, double additionalPrice);
     bool updateEquipment(int id, const QString& name, const QString& category, 
-                        double price, double deposit, int quantity, const QString& description, double additionalPrice);
+                        double price, double deposit, int quantity, int availableQuantity,
+                        const QString& description, double additionalPrice);
     bool deleteEquipment(int id);
     QSqlQuery getEquipment();
     QSqlQuery getEquipmentById(int id);
@@ -90,13 +97,16 @@ private:
     bool createEquipmentTable();
     bool createRentalsTable();
     bool createSettingsTable();
+    QByteArray loadOrCreateDbSalt();
+    QByteArray deriveDbKey(const QString& password);
+    bool applyEncryptionKey(const QByteArray& key);
     
     QSqlDatabase m_db;
     QString m_dbPath;
     bool m_isOpen;
     
     // Security
-    QString m_encryptionKey;
+    QByteArray m_encryptionKey;
     bool setupEncryption();
     
     // Singleton instance

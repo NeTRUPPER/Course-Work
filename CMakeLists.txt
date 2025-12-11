@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find Qt6 components
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql PrintSupport)
+find_package(OpenSSL REQUIRED)
 
 
 # Set up Qt6
@@ -81,6 +82,7 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Widgets 
     Qt6::Sql
     Qt6::PrintSupport
+    OpenSSL::Crypto
 )
 
 # Set compiler flags

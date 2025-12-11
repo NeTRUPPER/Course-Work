@@ -15,6 +15,7 @@
 #include <QDateTime>
 #include <QTimer>
 #include <QRandomGenerator>
+#include <QThread>
 
 class Security : public QObject
 {
@@ -63,6 +64,12 @@ private:
     static QString generateSalt();
     static QString hashPassword(const QString& password, const QString& salt);
     static QString generateSessionToken();
+    static QSettings makeSecureSettings();
+    static void ensureSecurePermissions(const QString& path);
+    static void recordFailure();
+    static void resetFailures();
+    static int backoffMs();
+    static QByteArray currentSaltBytes();
     
     QString m_sessionToken;
     QDateTime m_sessionStart;
@@ -72,6 +79,9 @@ private:
     // Encryption key derived from master password
     QByteArray m_encryptionKey;
     bool m_isInitialized;
+
+    static int s_failedAttempts;
+    static QDateTime s_lastFailure;
 };
 
 #endif // SECURITY_H 

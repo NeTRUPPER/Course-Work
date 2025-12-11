@@ -10,8 +10,14 @@
 #include <QBuffer>
 #include <QIODevice>
 #include <QMessageAuthenticationCode>
+#include <QFile>
+#include <QFileInfo>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 Security* Security::m_instance = nullptr;
+int Security::s_failedAttempts = 0;
+QDateTime Security::s_lastFailure;
 
 Security::Security(QObject *parent)
     : QObject(parent)
@@ -180,16 +186,65 @@ QByteArray Security::encryptData(const QByteArray& data)
     if (!m_instance || !m_instance->m_isAuthenticated) {
         return QByteArray();
     }
-    
-    // Простое XOR шифрование (в реальном проекте используйте более надежные алгоритмы)
-    QByteArray encrypted = data;
-    QByteArray key = m_instance->m_encryptionKey;
-    
-    for (int i = 0; i < encrypted.size(); ++i) {
-        encrypted[i] = encrypted[i] ^ key[i % key.size()];
+
+    static const int IV_LEN = 12;   // рекомендовано для GCM
+    static const int TAG_LEN = 16;  // 128-bit tag
+    const QByteArray key = m_instance->m_encryptionKey;
+    if (key.size() < 32) return QByteArray();
+
+    QByteArray iv(IV_LEN, 0);
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(iv.data()), IV_LEN) != 1) {
+        qWarning() << "Не удалось сгенерировать IV";
+        return QByteArray();
     }
-    
-    return encrypted;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return QByteArray();
+
+    QByteArray ciphertext(data.size() + EVP_MAX_BLOCK_LENGTH, 0);
+    int outLen = 0, totalLen = 0;
+    QByteArray tag(TAG_LEN, 0);
+
+    bool ok = true;
+    ok = ok && EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) == 1;
+    ok = ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, nullptr) == 1;
+    ok = ok && EVP_EncryptInit_ex(ctx, nullptr, nullptr,
+                                  reinterpret_cast<const unsigned char*>(key.constData()),
+                                  reinterpret_cast<const unsigned char*>(iv.constData())) == 1;
+    if (ok) {
+        ok = EVP_EncryptUpdate(ctx,
+                               reinterpret_cast<unsigned char*>(ciphertext.data()), &outLen,
+                               reinterpret_cast<const unsigned char*>(data.constData()),
+                               data.size()) == 1;
+        totalLen = outLen;
+    }
+    if (ok) {
+        ok = EVP_EncryptFinal_ex(ctx,
+                                 reinterpret_cast<unsigned char*>(ciphertext.data()) + totalLen,
+                                 &outLen) == 1;
+        totalLen += outLen;
+    }
+    if (ok) {
+        ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_LEN, tag.data()) == 1;
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    if (!ok) {
+        qWarning() << "Ошибка AES-GCM при шифровании";
+        return QByteArray();
+    }
+
+    ciphertext.resize(totalLen);
+
+    // Формат: "GCM1" + IV + TAG + CIPHERTEXT
+    QByteArray out;
+    out.reserve(4 + IV_LEN + TAG_LEN + ciphertext.size());
+    out.append("GCM1", 4);
+    out.append(iv);
+    out.append(tag);
+    out.append(ciphertext);
+    return out;
 }
 
 QByteArray Security::decryptData(const QByteArray& encryptedData)
@@ -197,16 +252,58 @@ QByteArray Security::decryptData(const QByteArray& encryptedData)
     if (!m_instance || !m_instance->m_isAuthenticated) {
         return QByteArray();
     }
-    
-    // XOR дешифрование
-    QByteArray decrypted = encryptedData;
-    QByteArray key = m_instance->m_encryptionKey;
-    
-    for (int i = 0; i < decrypted.size(); ++i) {
-        decrypted[i] = decrypted[i] ^ key[i % key.size()];
+
+    static const int IV_LEN = 12;
+    static const int TAG_LEN = 16;
+    const QByteArray key = m_instance->m_encryptionKey;
+    if (key.size() < 32) return QByteArray();
+
+    if (encryptedData.size() < 4 + IV_LEN + TAG_LEN) return QByteArray();
+    if (encryptedData.left(4) != QByteArray("GCM1", 4)) return QByteArray();
+
+    const QByteArray iv = encryptedData.mid(4, IV_LEN);
+    const QByteArray tag = encryptedData.mid(4 + IV_LEN, TAG_LEN);
+    const QByteArray cipher = encryptedData.mid(4 + IV_LEN + TAG_LEN);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return QByteArray();
+
+    QByteArray plain(cipher.size(), 0);
+    int outLen = 0, totalLen = 0;
+    bool ok = true;
+
+    ok = ok && EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) == 1;
+    ok = ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, nullptr) == 1;
+    ok = ok && EVP_DecryptInit_ex(ctx, nullptr, nullptr,
+                                  reinterpret_cast<const unsigned char*>(key.constData()),
+                                  reinterpret_cast<const unsigned char*>(iv.constData())) == 1;
+    if (ok) {
+        ok = EVP_DecryptUpdate(ctx,
+                               reinterpret_cast<unsigned char*>(plain.data()), &outLen,
+                               reinterpret_cast<const unsigned char*>(cipher.constData()),
+                               cipher.size()) == 1;
+        totalLen = outLen;
     }
-    
-    return decrypted;
+    if (ok) {
+        ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TAG_LEN,
+                                 const_cast<char*>(tag.constData())) == 1;
+    }
+    if (ok) {
+        ok = EVP_DecryptFinal_ex(ctx,
+                                 reinterpret_cast<unsigned char*>(plain.data()) + totalLen,
+                                 &outLen) == 1;
+        totalLen += outLen;
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    if (!ok) {
+        qWarning() << "Ошибка AES-GCM: верификация тега не пройдена";
+        return QByteArray();
+    }
+
+    plain.resize(totalLen);
+    return plain;
 }
 
 QString Security::encryptString(const QString& text)
@@ -232,11 +329,12 @@ bool Security::setMasterPassword(const QString& password)
     QString salt = generateSalt();
     QString hash = hashPassword(password, salt);
     
-    QSettings settings;
-    settings.setValue("security/master_password_hash", hash);
-    settings.setValue("security/salt", salt);
-    // Ключ шифрования больше не запрашиваем отдельно
-    m_instance->m_encryptionKey.clear();
+    QSettings settings = makeSecureSettings();
+    settings.setValue("master_password_hash", hash);
+    settings.setValue("salt", salt);
+    ensureSecurePermissions(settings.fileName());
+    // Обновляем ключ шифрования сразу после установки пароля
+    m_instance->m_encryptionKey = deriveKeyFromPassword(password, salt.toUtf8(), 200000);
     
     return true;
 }
@@ -248,14 +346,25 @@ bool Security::verifyMasterPassword(const QString& password)
     }
     
     QString storedHash = getMasterPasswordHash();
-    QString salt = QSettings().value("security/salt").toString();
+    QSettings s = makeSecureSettings();
+    QString salt = s.value("salt").toString();
     
     if (storedHash.isEmpty() || salt.isEmpty()) {
         return false;
     }
     
     QString hash = hashPassword(password, salt);
-    return hash == storedHash;
+    if (hash == storedHash) {
+        resetFailures();
+        m_instance->m_encryptionKey = deriveKeyFromPassword(password, salt.toUtf8(), 200000);
+        return true;
+    }
+
+    recordFailure();
+    const int delay = backoffMs();
+    qWarning() << "Неверный мастер-пароль. Попытка" << s_failedAttempts << ", задержка" << delay << "мс";
+    QThread::msleep(delay);
+    return false;
 }
 
 bool Security::hasMasterPassword()
@@ -274,10 +383,11 @@ void Security::startSession()
     
     // Устанавливаем таймер для автоматического завершения сессии
     QTimer::singleShot(3600000, m_instance, []() { // 1 час
-        if (Security::m_instance && Security::m_instance->isSessionValid()) {
+        if (Security::m_instance) {
             Security::m_instance->endSession();
-            QMessageBox::warning(nullptr, "Сессия завершена", 
-                               "Сессия автоматически завершена для безопасности.");
+            Security::m_instance->m_isAuthenticated = false;
+            QMessageBox::warning(nullptr, "Сессия завершена",
+                                 "Сессия автоматически завершена для безопасности.");
         }
     });
 }
@@ -329,12 +439,27 @@ void Security::revokePermission(const QString& permission)
 
 QString Security::getMasterPasswordHash()
 {
-    return QSettings().value("security/master_password_hash").toString();
+    QSettings s = makeSecureSettings();
+    QString hash = s.value("master_password_hash").toString();
+    // миграция из старого места
+    if (hash.isEmpty()) {
+        QSettings legacy;
+        hash = legacy.value("security/master_password_hash").toString();
+        if (!hash.isEmpty()) {
+            s.setValue("master_password_hash", hash);
+            ensureSecurePermissions(s.fileName());
+            const QString legacySalt = legacy.value("security/salt").toString();
+            if (!legacySalt.isEmpty()) s.setValue("salt", legacySalt);
+        }
+    }
+    return hash;
 }
 
 void Security::setMasterPasswordHash(const QString& hash)
 {
-    QSettings().setValue("security/master_password_hash", hash);
+    QSettings s = makeSecureSettings();
+    s.setValue("master_password_hash", hash);
+    ensureSecurePermissions(s.fileName());
 }
 
 QString Security::generateSalt()
@@ -351,6 +476,54 @@ QString Security::hashPassword(const QString& password, const QString& salt)
 {
     QByteArray data = (password + salt).toUtf8();
     return QString(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
+}
+
+QSettings Security::makeSecureSettings()
+{
+    const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/secure";
+    QDir().mkpath(baseDir);
+    ensureSecurePermissions(baseDir);
+    const QString path = baseDir + "/secure.ini";
+    return QSettings(path, QSettings::IniFormat);
+}
+
+void Security::ensureSecurePermissions(const QString& path)
+{
+    QFileInfo info(path);
+    if (!info.exists()) return;
+
+    QFile f(path);
+    if (info.isDir()) {
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    } else {
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+    }
+}
+
+void Security::recordFailure()
+{
+    ++s_failedAttempts;
+    s_lastFailure = QDateTime::currentDateTimeUtc();
+}
+
+void Security::resetFailures()
+{
+    s_failedAttempts = 0;
+    s_lastFailure = QDateTime();
+}
+
+int Security::backoffMs()
+{
+    // Экспоненциальная задержка: 500, 1000, 2000, 4000, 8000 (макс)
+    int exponent = qMin(4, s_failedAttempts - 1); // первая ошибка — 500 мс
+    int delay = 500 * (1 << exponent);
+    return qMin(delay, 8000);
+}
+
+QByteArray Security::currentSaltBytes()
+{
+    QSettings s = makeSecureSettings();
+    return s.value("salt").toString().toUtf8();
 }
 
 QByteArray Security::generateEncryptionKey()

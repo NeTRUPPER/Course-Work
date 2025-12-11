@@ -13,12 +13,16 @@ class Customer : public QObject
 
 public:
     explicit Customer(QObject *parent = nullptr);
-    Customer(int id, const QString& name, const QString& phone, const QString& email,
+    Customer(int id, const QString& lastName, const QString& firstName, const QString& middleName,
+            const QString& phone, const QString& email,
             const QString& passport, const QString& address, QObject *parent = nullptr);
     
     // Getters
     int getId() const { return m_id; }
-    QString getName() const { return m_name; }
+    QString getLastName() const { return m_lastName; }
+    QString getFirstName() const { return m_firstName; }
+    QString getMiddleName() const { return m_middleName; }
+    QString getName() const { return getDisplayName(); }
     QString getPhone() const { return m_phone; }
     QString getEmail() const { return m_email; }
     QString getPassport() const { return m_passport; }
@@ -29,7 +33,10 @@ public:
     
     // Setters
     void setId(int id) { m_id = id; }
-    void setName(const QString& name) { m_name = name; }
+    void setLastName(const QString& v) { m_lastName = v; }
+    void setFirstName(const QString& v) { m_firstName = v; }
+    void setMiddleName(const QString& v) { m_middleName = v; }
+    void setName(const QString& fullName); // разбор ФИО по пробелам
     void setPhone(const QString& phone) { m_phone = phone; }
     void setEmail(const QString& email) { m_email = email; }
     void setPassport(const QString& passport) { m_passport = passport; }
@@ -54,7 +61,9 @@ public:
 
 private:
     int m_id;
-    QString m_name;
+    QString m_lastName;
+    QString m_firstName;
+    QString m_middleName;
     QString m_phone;
     QString m_email;
     QString m_passport;

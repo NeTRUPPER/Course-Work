@@ -1,0 +1,10 @@
+{
+    "Id": "sqlite",
+    "Name": "SQLite",
+    "QDocModule": "qtbase",
+    "QtUsage": "Used as the bundled SQL backend implementation.",
+    "Homepage": "https://www.sqlite.org/",
+    "License": "Public Domain",
+    "LicenseId": "LicenseRef-SQLite-PD",
+    "Copyright": "D. Richard Hipp and the SQLite contributors"
+}

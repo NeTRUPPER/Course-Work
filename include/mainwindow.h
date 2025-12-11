@@ -59,8 +59,11 @@
 #include <QUrl>
 #include <QStandardPaths>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QtPrintSupport/QPrinter>
 #include <QtPrintSupport/QPrintDialog>
+
+class AdminPrivilegeScope;
 
 // Forward declarations
 class CustomerForm;
@@ -127,8 +130,10 @@ private:
     void createReportsTab();
     void setupConnections();
     void updateStatus();
+    void updateUserLabel();
     void loadSettings();
     void saveSettings();
+    bool ensureAdminAccess(int minutes = 15);
     
     // Table refresh methods
     void refreshCustomerTable();
@@ -145,13 +150,14 @@ private:
     bool generateDocxFromTemplate(const QString& templatePath, const QMap<QString, QString>& values, QString& outputDocxPath);
 
     // Admin security
+    friend class AdminPrivilegeScope;
     AdminSession m_adminSession;
     AdminPasswordManager m_adminMgr;
     void connectAdminSensitiveActions();
     void setupSecurityMenu();
     void runFirstTimePasswordWizard();
     void setAdminPassword();
-    void adminLogout();
+    void adminLogout(bool silent = false);
 
     // UI Components
     QTabWidget *m_tabWidget;
@@ -174,6 +180,7 @@ private:
     QPushButton *m_editEquipmentBtn;
     QPushButton *m_deleteEquipmentBtn;
     QLineEdit *m_equipmentSearchEdit;
+    QCheckBox *m_equipmentAvailableOnlyCheck;
     
     // Rental Tab Components
     QTableWidget *m_rentalTable;

@@ -1,5 +1,5 @@
 # Multi-stage build для Qt приложения с SQLCipher
-FROM ubuntu:22.04 as builder
+FROM ubuntu:22.04 AS builder
 
 # Установка зависимостей для сборки
 RUN apt-get update && apt-get install -y \
@@ -13,6 +13,11 @@ RUN apt-get update && apt-get install -y \
     libqt6sql6-sqlite \
     libsqlcipher-dev \
     sqlcipher \
+    libssl-dev \
+    libxkbcommon-dev \
+    libxkbcommon-x11-dev \
+    libgl1-mesa-dev \
+    libglu1-mesa-dev \
     zip \
     unzip \
     curl \
@@ -26,10 +31,11 @@ WORKDIR /app
 COPY . .
 
 # Сборка приложения с SQLCipher
-RUN BUILD_SQLCIPHER_PLUGIN=1 ./build.sh
+RUN BUILD_SQLCIPHER_PLUGIN=1 ./build.sh \
+ && mkdir -p /app/build/sqldrivers
 
 # Финальный образ для запуска
-FROM ubuntu:22.04 as runtime
+FROM ubuntu:22.04 AS runtime
 
 # Установка только runtime зависимостей
 RUN apt-get update && apt-get install -y \
@@ -37,6 +43,8 @@ RUN apt-get update && apt-get install -y \
     libqt6sql6-sqlite \
     libsqlcipher0 \
     sqlcipher \
+    openssl \
+    libssl3 \
     zip \
     unzip \
     libxcb-xinerama0 \
@@ -65,8 +73,8 @@ RUN apt-get update && apt-get install -y \
 # Создание пользователя для безопасности
 RUN useradd -m -s /bin/bash appuser
 
-# Создание директорий для данных
-RUN mkdir -p /app/data /app/templates && \
+# Создание директорий для данных/конфигов/экспорта
+RUN mkdir -p /app/data /app/config /app/shared /app/templates && \
     chown -R appuser:appuser /app
 
 # Копирование собранного приложения
@@ -74,8 +82,6 @@ COPY --from=builder /app/build/TouristRentalApp /app/
 COPY --from=builder /app/build/sqldrivers /app/sqldrivers/
 COPY --from=builder /app/resources /app/resources/
 
-# Копирование шаблонов (если есть)
-COPY --chown=appuser:appuser templates/ /app/templates/ 2>/dev/null || true
 
 # Установка прав
 RUN chmod +x /app/TouristRentalApp && \
@@ -92,9 +98,11 @@ ENV QT_QPA_PLATFORM=xcb
 ENV QT_PLUGIN_PATH=/app/sqldrivers
 ENV QT_DEBUG_PLUGINS=0
 ENV XDG_DATA_HOME=/app/data
+ENV XDG_CONFIG_HOME=/app/config
+ENV APP_SHARED_DIR=/app/shared
 
 # Точка входа
 ENTRYPOINT ["./TouristRentalApp"]
 
-# Папка с БД и сохранением данных
-VOLUME ["/app/data"]
+# Папки с БД, конфигами и файлами (CSV/экспорт)
+VOLUME ["/app/data", "/app/config", "/app/shared"]

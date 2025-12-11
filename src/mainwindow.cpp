@@ -3,6 +3,20 @@
 #include <QStringConverter>
 #endif
 
+class AdminPrivilegeScope {
+public:
+    explicit AdminPrivilegeScope(MainWindow* window, bool silent = true)
+        : m_window(window), m_silent(silent) {}
+    ~AdminPrivilegeScope() {
+        if (m_window) {
+            m_window->adminLogout(m_silent);
+        }
+    }
+private:
+    MainWindow* m_window;
+    bool m_silent;
+};
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_rentalManager(nullptr)
@@ -19,8 +33,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupConnections();
     
     setupSecurityMenu();                // добавим меню и действия
-    m_adminSession.clear();             // на старте режим админа выключен
-    statusBar()->showMessage(tr("Admin: OFF"), 1500);
+    adminLogout(true);                  // на старте режим админа выключен
 
     runFirstTimePasswordWizard();
 
@@ -147,7 +160,8 @@ void MainWindow::setupStatusBar()
     QStatusBar *statusBar = this->statusBar();
     
     m_statusLabel = new QLabel("Готово");
-    m_userLabel = new QLabel("Пользователь: Администратор");
+    m_userLabel = new QLabel();
+    updateUserLabel();
     m_dateLabel = new QLabel(QDateTime::currentDateTime().toString("dd.MM.yyyy hh:mm"));
     
     statusBar->addWidget(m_statusLabel);
@@ -158,8 +172,17 @@ void MainWindow::setupStatusBar()
     QTimer *timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, [this]() {
         m_dateLabel->setText(QDateTime::currentDateTime().toString("dd.MM.yyyy hh:mm"));
+        updateUserLabel();
     });
     timer->start(60000); // Обновление каждую минуту
+}
+
+void MainWindow::updateUserLabel()
+{
+    if (!m_userLabel) return;
+    const bool admin = m_adminSession.isElevated();
+    const QString role = admin ? QStringLiteral("Администратор") : QStringLiteral("Менеджер");
+    m_userLabel->setText(QStringLiteral("Пользователь: %1").arg(role));
 }
 
 void MainWindow::setupCentralWidget()
@@ -188,8 +211,10 @@ void MainWindow::createCustomerTab()
     
     // Таблица клиентов
     m_customerTable = new QTableWidget();
-    m_customerTable->setColumnCount(6);
-    m_customerTable->setHorizontalHeaderLabels({"ID", "Имя", "Телефон", "Email", "Паспорт", "Адрес"});
+    m_customerTable->setColumnCount(7);
+    m_customerTable->setHorizontalHeaderLabels({"Фамилия", "Имя", "Отчество", "Телефон", "Email", "Паспорт", "Адрес"});
+    m_customerTable->verticalHeader()->setVisible(false);
+    m_customerTable->setSortingEnabled(true);
     m_customerTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_customerTable->setAlternatingRowColors(true);
     layout->addWidget(m_customerTable);
@@ -229,12 +254,16 @@ void MainWindow::createEquipmentTab()
     m_equipmentSearchEdit->setPlaceholderText("Поиск оборудования...");
     m_equipmentSearchEdit->setProperty("search", true);
     searchLayout->addWidget(m_equipmentSearchEdit);
+    m_equipmentAvailableOnlyCheck = new QCheckBox("Только доступное", this);
+    searchLayout->addWidget(m_equipmentAvailableOnlyCheck);
     layout->addLayout(searchLayout);
     
     // Таблица оборудования
     m_equipmentTable = new QTableWidget();
-    m_equipmentTable->setColumnCount(7);
-            m_equipmentTable->setHorizontalHeaderLabels({"ID", "Название", "Категория", "Цена/день (₽)", "Залог (₽)", "Количество", "Доступно"});
+    m_equipmentTable->setColumnCount(6);
+            m_equipmentTable->setHorizontalHeaderLabels({"Название", "Категория", "Цена/день (₽)", "Залог (₽)", "Количество", "Доступно"});
+    m_equipmentTable->verticalHeader()->setVisible(false);
+    m_equipmentTable->setSortingEnabled(true);
     m_equipmentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_equipmentTable->setAlternatingRowColors(true);
     layout->addWidget(m_equipmentTable);
@@ -356,7 +385,8 @@ void MainWindow::onReportExport()
 // Меню «Настройки» Резервное копирование
 void MainWindow::onSettingsBackup()
 {
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
 
     const QString suggested =
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) +
@@ -379,7 +409,8 @@ void MainWindow::onSettingsBackup()
 // Меню «Настройки» Восстановление 
 void MainWindow::onSettingsRestore()
 {
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
 
     const QString fileName = QFileDialog::getOpenFileName(
         this, "Выбрать файл для восстановления",
@@ -408,13 +439,15 @@ void MainWindow::onSettingsRestore()
 void MainWindow::onChangeAdminPassword()
 {
     // Только админ может менять
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
     setAdminPassword();
 }
 
 void MainWindow::onImportEquipmentCsv()
 {
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
 
     const QString fileName = QFileDialog::getOpenFileName(
         this,
@@ -578,6 +611,26 @@ void MainWindow::setupSecurityMenu() {
     actSetPwd->setShortcut(QKeySequence("Ctrl+Shift+P"));
 }
 
+bool MainWindow::ensureAdminAccess(int minutes)
+{
+    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr, minutes)) {
+        return false;
+    }
+    updateUserLabel();
+    statusBar()->showMessage(tr("Admin: ON"), 1500);
+    return true;
+}
+
+void MainWindow::adminLogout(bool silent)
+{
+    const bool wasElevated = m_adminSession.isElevated();
+    m_adminSession.clear();
+    updateUserLabel();
+    if (!silent && wasElevated) {
+        statusBar()->showMessage(tr("Admin: OFF"), 1500);
+    }
+}
+
 void MainWindow::runFirstTimePasswordWizard() {
     if (m_adminMgr.hasPassword()) return;
 
@@ -594,6 +647,21 @@ void MainWindow::runFirstTimePasswordWizard() {
 }
 
 void MainWindow::setAdminPassword() {
+    if (m_adminMgr.hasPassword()) {
+        bool okCurrent = false;
+        const QString current = QInputDialog::getText(
+            this, tr("Текущий админ-пароль"),
+            tr("Введите текущий админ-пароль:"),
+            QLineEdit::Password, {}, &okCurrent);
+        if (!okCurrent) return;
+
+        if (!m_adminMgr.verifyPassword(current)) {
+            QMessageBox::critical(this, tr("Ошибка"), tr("Неверный текущий пароль."));
+            AuditLogger::instance().log("Admin password change failed", "invalid current", AuditSeverity::Security);
+            return;
+        }
+    }
+
     bool ok1=false, ok2=false;
     const QString p1 = QInputDialog::getText(this, tr("Новый админ-пароль"),
                                              tr("Введите новый пароль (мин. 10 символов):"),
@@ -616,7 +684,7 @@ void MainWindow::setAdminPassword() {
     }
 
     if (m_adminMgr.setNewPassword(p1)) {
-        m_adminSession.clear(); // сбросить возможную старую сессию
+        adminLogout(true); // сбросить возможную старую сессию
         statusBar()->showMessage(tr("Админ-пароль установлен"), 3000);
         QMessageBox::information(this, tr("Готово"), tr("Админ-пароль успешно установлен."));
         AuditLogger::instance().log("Admin password changed", "", AuditSeverity::Security);
@@ -633,8 +701,10 @@ void MainWindow::createRentalTab()
     
     // Таблица аренд
             m_rentalTable = new QTableWidget();
-        m_rentalTable->setColumnCount(9);
-            m_rentalTable->setHorizontalHeaderLabels({"ID", "Клиент", "Оборудование", "Количество", "Дата начала", "Дата окончания", "Статус", "Стоимость аренды (₽)", "Залог (₽)"});
+        m_rentalTable->setColumnCount(8);
+            m_rentalTable->setHorizontalHeaderLabels({"Клиент", "Оборудование", "Количество", "Дата начала", "Дата окончания", "Статус", "Стоимость аренды (₽)", "Залог (₽)"});
+    m_rentalTable->verticalHeader()->setVisible(false);
+    m_rentalTable->setSortingEnabled(true);
     m_rentalTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_rentalTable->setAlternatingRowColors(true);
     layout->addWidget(m_rentalTable);
@@ -793,6 +863,9 @@ void MainWindow::setupConnections()
     // Соединения поиска
     connect(m_customerSearchEdit, &QLineEdit::textChanged, this, &MainWindow::onCustomerSearch);
     connect(m_equipmentSearchEdit, &QLineEdit::textChanged, this, &MainWindow::onEquipmentSearch);
+    if (m_equipmentAvailableOnlyCheck) {
+        connect(m_equipmentAvailableOnlyCheck, &QCheckBox::toggled, this, &MainWindow::refreshEquipmentTable);
+    }
     
     // Соединения таблиц
     connect(m_customerTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::onCustomerSelectionChanged);
@@ -834,7 +907,7 @@ void MainWindow::onNewCustomer()
         if (customer->save()) {
             refreshCustomerTable();
             statusBar()->showMessage("Клиент успешно создан", 3000);
-            AuditLogger::instance().log("Customer created", QString("id=%1 name=%2").arg(customer->getId()).arg(customer->getName()));
+            AuditLogger::instance().log("Customer created", QString("id=%1").arg(customer->getId()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось создать клиента");
             AuditLogger::instance().log("Customer create failed", "", AuditSeverity::Error);
@@ -853,7 +926,7 @@ void MainWindow::onNewEquipment()
         if (equipment->save()) {
             refreshEquipmentTable();
             statusBar()->showMessage("Оборудование успешно создано", 3000);
-            AuditLogger::instance().log("Equipment created", QString("id=%1 name=%2").arg(equipment->getId()).arg(equipment->getName()));
+            AuditLogger::instance().log("Equipment created", QString("id=%1").arg(equipment->getId()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось создать оборудование");
             AuditLogger::instance().log("Equipment create failed", "", AuditSeverity::Error);
@@ -871,11 +944,11 @@ void MainWindow::onNewRental()
         Rental* rental = dialog.getRental();
         if (rental->save()) {
             refreshRentalTable();
+            refreshEquipmentTable();
             statusBar()->showMessage("Аренда успешно создана", 3000);
             AuditLogger::instance().log("Rental created",
-                QString("id=%1 cust=%2 eq=%3 qty=%4")
+                QString("id=%1 eq=%2 qty=%3")
                     .arg(rental->getId())
-                    .arg(rental->getCustomer()?rental->getCustomer()->getName():"")
                     .arg(rental->getEquipment()?rental->getEquipment()->getName():"")
                     .arg(rental->getQuantity()));
         } else {
@@ -945,7 +1018,7 @@ void MainWindow::onReports()
         report += "<h3>Статистика аренд</h3>";
         report += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
         report += "<tr style='background-color: #1976d2; color: white;'>";
-        report += "<th>ID</th><th>Клиент</th><th>Оборудование</th><th>Количество</th><th>Дата начала</th><th>Дата окончания</th><th>Статус</th><th>Стоимость аренды</th><th>Залог</th>";
+        report += "<th>Клиент</th><th>Оборудование</th><th>Количество</th><th>Дата начала</th><th>Дата окончания</th><th>Статус</th><th>Стоимость аренды</th><th>Залог</th>";
         report += "</tr>";
         
         for (Rental* rental : rentals) {
@@ -970,7 +1043,6 @@ void MainWindow::onReports()
                 totalRentals++;
                 
                 report += "<tr>";
-                report += QString("<td>%1</td>").arg(rental->getId());
                 report += QString("<td>%1</td>").arg(rental->getCustomer()->getName());
                 report += QString("<td>%1</td>").arg(rental->getEquipment()->getName());
                 report += QString("<td>%1</td>").arg(rental->getQuantity());
@@ -1178,14 +1250,16 @@ void MainWindow::onSettings()
     });
     
     connect(auditBtn, &QPushButton::clicked, [&, this](){
-        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+        if (!ensureAdminAccess()) return;
+        const AdminPrivilegeScope adminScope(this);
         AuditLogger::instance().log("Open audit log", "", AuditSeverity::Security);
         AuditLogDialog dlg(this);
         dlg.exec();
     });
 
     connect(backupBtn, &QPushButton::clicked, [&, this]() {
-        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+        if (!ensureAdminAccess()) return;
+        const AdminPrivilegeScope adminScope(this);
 
         const QString suggested = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
                                 + "/rental_backup_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".db";
@@ -1202,7 +1276,8 @@ void MainWindow::onSettings()
     });
 
     connect(restoreBtn, &QPushButton::clicked, [&, this]() {
-        if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+        if (!ensureAdminAccess()) return;
+        const AdminPrivilegeScope adminScope(this);
 
         const QString fileName = QFileDialog::getOpenFileName(&settingsDialog,
             "Выбрать файл для восстановления",
@@ -1266,7 +1341,7 @@ void MainWindow::onEditCustomer()
         if (customer->update()) {
             refreshCustomerTable();
             statusBar()->showMessage("Клиент успешно обновлен", 3000);
-            AuditLogger::instance().log("Customer updated", QString("id=%1 name=%2").arg(customer->getId()).arg(customer->getName()));
+            AuditLogger::instance().log("Customer updated", QString("id=%1").arg(customer->getId()));
 
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось обновить клиента");
@@ -1278,7 +1353,8 @@ void MainWindow::onEditCustomer()
 
 void MainWindow::onEditEquipment()
 {
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
 
     if (m_selectedEquipmentId == -1) {
         QMessageBox::information(this, "Информация", "Выберите оборудование для редактирования");
@@ -1296,7 +1372,7 @@ void MainWindow::onEditEquipment()
         if (equipment->update()) {
             refreshEquipmentTable();
             statusBar()->showMessage("Оборудование успешно обновлено", 3000);
-            AuditLogger::instance().log("Equipment updated", QString("id=%1 name=%2").arg(equipment->getId()).arg(equipment->getName()));
+            AuditLogger::instance().log("Equipment updated", QString("id=%1").arg(equipment->getId()));
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось обновить оборудование");
             AuditLogger::instance().log("Equipment update failed", QString("id=%1").arg(equipment->getId()), AuditSeverity::Error);
@@ -1319,10 +1395,11 @@ void MainWindow::onDeleteCustomer()
     if (reply == QMessageBox::Yes) {
         Customer* customer = Customer::loadById(m_selectedCustomerId);
         if (customer && customer->remove()) {
+            const int removedId = m_selectedCustomerId;
             refreshCustomerTable();
             m_selectedCustomerId = -1;
             statusBar()->showMessage("Клиент успешно удален", 3000);
-            AuditLogger::instance().log("Customer deleted", QString("id=%1").arg(m_selectedCustomerId), AuditSeverity::Security);
+            AuditLogger::instance().log("Customer deleted", QString("id=%1").arg(removedId), AuditSeverity::Security);
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось удалить клиента");
             AuditLogger::instance().log("Customer delete failed", QString("id=%1").arg(m_selectedCustomerId), AuditSeverity::Error);
@@ -1335,7 +1412,8 @@ void MainWindow::onDeleteEquipment()
 {
     
 
-    if (!AdminGuard::ensureAdmin(this, &m_adminSession, &m_adminMgr)) return;
+    if (!ensureAdminAccess()) return;
+    const AdminPrivilegeScope adminScope(this);
 
     if (m_selectedEquipmentId == -1) {
         QMessageBox::information(this, "Информация", "Выберите оборудование для удаления");
@@ -1349,10 +1427,11 @@ void MainWindow::onDeleteEquipment()
     if (reply == QMessageBox::Yes) {
         Equipment* equipment = Equipment::loadById(m_selectedEquipmentId);
         if (equipment && equipment->remove()) {
+            const int removedId = m_selectedEquipmentId;
             refreshEquipmentTable();
             m_selectedEquipmentId = -1;
             statusBar()->showMessage("Оборудование успешно удалено", 3000);
-            AuditLogger::instance().log("Equipment deleted", QString("id=%1").arg(m_selectedEquipmentId), AuditSeverity::Security);
+            AuditLogger::instance().log("Equipment deleted", QString("id=%1").arg(removedId), AuditSeverity::Security);
         } else {
             QMessageBox::warning(this, "Ошибка", "Не удалось удалить оборудование");
             AuditLogger::instance().log("Equipment delete failed", QString("id=%1").arg(m_selectedEquipmentId), AuditSeverity::Error);
@@ -1417,6 +1496,7 @@ void MainWindow::onCompleteRental()
     if (dialog.exec() == QDialog::Accepted) {
         if (rental->complete(damageCostSpin->value(), cleaningCostSpin->value(), finalDepositSpin->value(), notesEdit->toPlainText())) {
             refreshRentalTable();
+            refreshEquipmentTable();
             statusBar()->showMessage("Аренда успешно завершена", 3000);
             AuditLogger::instance().log("Rental completed", QString("id=%1").arg(rental->getId()));
         } else {
@@ -1705,7 +1785,15 @@ void MainWindow::onEquipmentSearch()
         refreshEquipmentTable();
     } else {
         QList<Equipment*> equipment = Equipment::search(searchTerm);
-        displayEquipment(equipment);
+        if (m_equipmentAvailableOnlyCheck && m_equipmentAvailableOnlyCheck->isChecked()) {
+            QList<Equipment*> filtered;
+            for (Equipment* e : equipment) {
+                if (e && e->isAvailable()) filtered << e;
+            }
+            displayEquipment(filtered);
+        } else {
+            displayEquipment(equipment);
+        }
     }
 }
 
@@ -1718,7 +1806,7 @@ void MainWindow::onCustomerSelectionChanged()
         m_deleteCustomerBtn->setEnabled(false);
     } else {
         int row = selectedItems.first()->row();
-        m_selectedCustomerId = m_customerTable->item(row, 0)->text().toInt();
+        m_selectedCustomerId = m_customerTable->item(row, 0)->data(Qt::UserRole).toInt();
         m_editCustomerBtn->setEnabled(true);
         m_deleteCustomerBtn->setEnabled(true);
     }
@@ -1733,7 +1821,7 @@ void MainWindow::onEquipmentSelectionChanged()
         m_deleteEquipmentBtn->setEnabled(false);
     } else {
         int row = selectedItems.first()->row();
-        m_selectedEquipmentId = m_equipmentTable->item(row, 0)->text().toInt();
+        m_selectedEquipmentId = m_equipmentTable->item(row, 0)->data(Qt::UserRole).toInt();
         m_editEquipmentBtn->setEnabled(true);
         m_deleteEquipmentBtn->setEnabled(true);
     }
@@ -1748,7 +1836,7 @@ void MainWindow::onRentalSelectionChanged()
         m_viewRentalBtn->setEnabled(false);
     } else {
         int row = selectedItems.first()->row();
-        m_selectedRentalId = m_rentalTable->item(row, 0)->text().toInt();
+        m_selectedRentalId = m_rentalTable->item(row, 0)->data(Qt::UserRole).toInt();
         m_completeRentalBtn->setEnabled(true);
         m_viewRentalBtn->setEnabled(true);
     }
@@ -1779,7 +1867,15 @@ void MainWindow::refreshCustomerTable()
 void MainWindow::refreshEquipmentTable()
 {
     QList<Equipment*> equipment = Equipment::getAll();
-    displayEquipment(equipment);
+    if (m_equipmentAvailableOnlyCheck && m_equipmentAvailableOnlyCheck->isChecked()) {
+        QList<Equipment*> filtered;
+        for (Equipment* e : equipment) {
+            if (e && e->isAvailable()) filtered << e;
+        }
+        displayEquipment(filtered);
+    } else {
+        displayEquipment(equipment);
+    }
 }
 
 void MainWindow::refreshRentalTable()
@@ -1791,57 +1887,71 @@ void MainWindow::refreshRentalTable()
 // Display methods
 void MainWindow::displayCustomers(const QList<Customer*>& customers)
 {
+    const bool sorting = m_customerTable->isSortingEnabled();
+    m_customerTable->setSortingEnabled(false);
     m_customerTable->setRowCount(0);
     
     for (Customer* customer : customers) {
         int row = m_customerTable->rowCount();
         m_customerTable->insertRow(row);
         
-        m_customerTable->setItem(row, 0, new QTableWidgetItem(QString::number(customer->getId())));
-        m_customerTable->setItem(row, 1, new QTableWidgetItem(customer->getName()));
-        m_customerTable->setItem(row, 2, new QTableWidgetItem(customer->getPhone()));
-        m_customerTable->setItem(row, 3, new QTableWidgetItem(customer->getEmail()));
-        m_customerTable->setItem(row, 4, new QTableWidgetItem(customer->getPassport()));
-        m_customerTable->setItem(row, 5, new QTableWidgetItem(customer->getAddress()));
+        auto *lastNameItem = new QTableWidgetItem(customer->getLastName());
+        lastNameItem->setData(Qt::UserRole, customer->getId());
+        m_customerTable->setItem(row, 0, lastNameItem);
+        m_customerTable->setItem(row, 1, new QTableWidgetItem(customer->getFirstName()));
+        m_customerTable->setItem(row, 2, new QTableWidgetItem(customer->getMiddleName()));
+        m_customerTable->setItem(row, 3, new QTableWidgetItem(customer->getPhone()));
+        m_customerTable->setItem(row, 4, new QTableWidgetItem(customer->getEmail()));
+        m_customerTable->setItem(row, 5, new QTableWidgetItem(customer->getPassport()));
+        m_customerTable->setItem(row, 6, new QTableWidgetItem(customer->getAddress()));
     }
+    m_customerTable->setSortingEnabled(sorting);
 }
 
 void MainWindow::displayEquipment(const QList<Equipment*>& equipment)
 {
+    const bool sorting = m_equipmentTable->isSortingEnabled();
+    m_equipmentTable->setSortingEnabled(false);
     m_equipmentTable->setRowCount(0);
     
     for (Equipment* item : equipment) {
         int row = m_equipmentTable->rowCount();
         m_equipmentTable->insertRow(row);
         
-        m_equipmentTable->setItem(row, 0, new QTableWidgetItem(QString::number(item->getId())));
-        m_equipmentTable->setItem(row, 1, new QTableWidgetItem(item->getName()));
-        m_equipmentTable->setItem(row, 2, new QTableWidgetItem(item->getCategory()));
-        m_equipmentTable->setItem(row, 3, new QTableWidgetItem(QString::number(item->getPrice(), 'f', 2) + " ₽"));
-        m_equipmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(item->getDeposit(), 'f', 2) + " ₽"));
-        m_equipmentTable->setItem(row, 5, new QTableWidgetItem(QString::number(item->getQuantity())));
-        m_equipmentTable->setItem(row, 6, new QTableWidgetItem(item->isAvailable() ? "Доступно" : "Недоступно"));
+        auto *nameItem = new QTableWidgetItem(item->getName());
+        nameItem->setData(Qt::UserRole, item->getId());
+        m_equipmentTable->setItem(row, 0, nameItem);
+        m_equipmentTable->setItem(row, 1, new QTableWidgetItem(item->getCategory()));
+        m_equipmentTable->setItem(row, 2, new QTableWidgetItem(QString::number(item->getPrice(), 'f', 2) + " ₽"));
+        m_equipmentTable->setItem(row, 3, new QTableWidgetItem(QString::number(item->getDeposit(), 'f', 2) + " ₽"));
+        m_equipmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(item->getQuantity())));
+        m_equipmentTable->setItem(row, 5, new QTableWidgetItem(item->isAvailable() ? "Доступно" : "Занято"));
     }
+    m_equipmentTable->setSortingEnabled(sorting);
 }
 
 void MainWindow::displayRentals(const QList<Rental*>& rentals)
 {
+    const bool sorting = m_rentalTable->isSortingEnabled();
+    m_rentalTable->setSortingEnabled(false);
     m_rentalTable->setRowCount(0);
     
     for (Rental* rental : rentals) {
         int row = m_rentalTable->rowCount();
         m_rentalTable->insertRow(row);
         
-        m_rentalTable->setItem(row, 0, new QTableWidgetItem(QString::number(rental->getId())));
-        m_rentalTable->setItem(row, 1, new QTableWidgetItem(rental->getCustomer()->getName()));
-        m_rentalTable->setItem(row, 2, new QTableWidgetItem(rental->getEquipment()->getName()));
-        m_rentalTable->setItem(row, 3, new QTableWidgetItem(QString::number(rental->getQuantity())));
-        m_rentalTable->setItem(row, 4, new QTableWidgetItem(rental->getStartDate().toString("dd.MM.yyyy HH:mm")));
-        m_rentalTable->setItem(row, 5, new QTableWidgetItem(rental->getEndDate().toString("dd.MM.yyyy HH:mm")));
-        m_rentalTable->setItem(row, 6, new QTableWidgetItem(rental->getStatusText()));
-        m_rentalTable->setItem(row, 7, new QTableWidgetItem(QString::number(rental->getTotalPrice(), 'f', 2) + " ₽"));
-        m_rentalTable->setItem(row, 8, new QTableWidgetItem(QString::number(rental->getDeposit(), 'f', 2) + " ₽"));
+        auto *customerItem = new QTableWidgetItem(rental->getCustomer()->getName());
+        customerItem->setData(Qt::UserRole, rental->getId());
+        m_rentalTable->setItem(row, 0, customerItem);
+        m_rentalTable->setItem(row, 1, new QTableWidgetItem(rental->getEquipment()->getName()));
+        m_rentalTable->setItem(row, 2, new QTableWidgetItem(QString::number(rental->getQuantity())));
+        m_rentalTable->setItem(row, 3, new QTableWidgetItem(rental->getStartDate().toString("dd.MM.yyyy HH:mm")));
+        m_rentalTable->setItem(row, 4, new QTableWidgetItem(rental->getEndDate().toString("dd.MM.yyyy HH:mm")));
+        m_rentalTable->setItem(row, 5, new QTableWidgetItem(rental->getStatusText()));
+        m_rentalTable->setItem(row, 6, new QTableWidgetItem(QString::number(rental->getTotalPrice(), 'f', 2) + " ₽"));
+        m_rentalTable->setItem(row, 7, new QTableWidgetItem(QString::number(rental->getDeposit(), 'f', 2) + " ₽"));
     }
+    m_rentalTable->setSortingEnabled(sorting);
 }
 
 // Style methods

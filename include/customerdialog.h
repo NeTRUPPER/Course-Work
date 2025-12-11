@@ -34,7 +34,9 @@ private:
     bool m_isEditMode;
     
     // UI Components
-    QLineEdit* m_nameEdit;
+    QLineEdit* m_lastNameEdit;
+    QLineEdit* m_firstNameEdit;
+    QLineEdit* m_middleNameEdit;
     QLineEdit* m_phoneEdit;
     QLineEdit* m_emailEdit;
     QLineEdit* m_passportEdit;
